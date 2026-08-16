@@ -83,6 +83,93 @@ enum PosOrderStatus {
   CANCELLED
 }
 
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum LicenseStatus {
+  TRIAL
+  ACTIVE
+  EXPIRED
+  SUSPENDED
+}
+
+enum PermissionSection {
+  OVERVIEW
+  RECEPTION
+  HOUSEKEEPING
+  SALES
+  KITCHEN
+  SERVICE_CENTER
+  INVENTORY
+  TEAM
+  FINANCE
+  REPORTS
+  SYSTEM
+}
+
+enum EmployeeDepartment {
+  RECEPTION
+  HOUSEKEEPING
+  KITCHEN
+  SALES
+  SERVICE_CENTER
+  INVENTORY
+  FINANCE
+  MANAGEMENT
+  MAINTENANCE
+  SECURITY
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CASUAL
+  CONTRACT
+  INTERN
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  ON_LEAVE
+  SUSPENDED
+  TERMINATED
+}
+
+enum SalaryType {
+  MONTHLY
+  DAILY
+  HOURLY
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  MPESA
+  CASH
+  CHEQUE
+}
+
+enum BusinessType {
+  RESTAURANT
+  CAFE
+  HOTEL
+  MOTEL
+}
+
+enum Currency {
+  KES
+  UGX
+  TZS
+  USD
+}
+
+enum TaxMode {
+  INCLUSIVE
+  EXCLUSIVE
+}
+
 model Tenant {
   id            String         @id @default(cuid())
   name          String
@@ -90,6 +177,17 @@ model Tenant {
   isActive      Boolean        @default(true)
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
+
+  licenseKey        String        @default(uuid())
+  licenseStatus     LicenseStatus @default(TRIAL)
+  subscriptionPlan  String        @default("Hotelier Standard — Yearly")
+  subscriptionStart DateTime      @default(now())
+  nextDueDate       DateTime?
+  maxBranches       Int           @default(1)
+  maxUsers          Int           @default(10)
+  maxDevices        Int           @default(10)
+  lastLicenseCheck  DateTime?
+
   users         User[]
   tenantModules TenantModule[]
   cafeSettings  CafeSettings?
@@ -105,6 +203,10 @@ model Tenant {
   roomTypes      RoomType[]
   reservations   Reservation[]
   housekeepingTasks HousekeepingTask[]
+  employees      Employee[]
+  businessProfile BusinessProfile?
+  roles           Role[]
+  sessions        Session[]
 }
 
 model Customer {
@@ -408,6 +510,132 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sessions  Session[]
 
   @@unique([tenantId, email])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  tenantId  String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([tenantId])
+}
+
+model Employee {
+  id          String    @id @default(cuid())
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Personal info
+  firstName   String
+  lastName    String
+  gender      Gender?
+  dateOfBirth DateTime?
+  nationalId  String?
+  photoUrl    String?
+
+  // Contact
+  phone            String
+  alternativePhone String?
+  email            String?
+  address          String?
+
+  // Employment
+  department     EmployeeDepartment
+  jobTitle       String
+  employmentType EmploymentType @default(FULL_TIME)
+  status         EmployeeStatus @default(ACTIVE)
+  dateHired      DateTime
+  supervisorId   String?
+  supervisor     Employee?  @relation("EmployeeSupervisor", fields: [supervisorId], references: [id], onDelete: SetNull)
+  reports        Employee[] @relation("EmployeeSupervisor")
+  roleId         String?
+  role           Role?      @relation(fields: [roleId], references: [id], onDelete: SetNull)
+
+  // Compensation
+  salaryType        SalaryType    @default(MONTHLY)
+  salaryAmount      Decimal       @db.Decimal(12, 2)
+  paymentMethod     PaymentMethod @default(BANK_TRANSFER)
+  bankName          String?
+  bankAccountNumber String?
+  mpesaNumber       String?
+
+  // Statutory (Kenya)
+  kraPin     String?
+  nssfNumber String?
+  shaNumber  String?
+
+  // System / till login
+  employeeCode String
+  pin          String
+
+  // Emergency contact
+  emergencyContactName  String?
+  emergencyContactPhone String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, employeeCode])
+  @@index([tenantId, department])
+  @@index([tenantId, status])
+  @@index([supervisorId])
+  @@index([roleId])
+}
+
+model Role {
+  id              String              @id @default(cuid())
+  tenantId        String
+  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name            String
+  description     String?
+  isSystemRole    Boolean             @default(false)
+  allowedSections PermissionSection[] @default([])
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  employees       Employee[]
+
+  @@unique([tenantId, name])
+}
+
+model BusinessProfile {
+  id       String @id @default(cuid())
+  tenantId String @unique
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  logoUrl  String?
+
+  businessName       String
+  businessType       BusinessType
+  currency           Currency
+  registrationNumber String?
+  kraPin             String?
+
+  taxRate Decimal? @db.Decimal(5, 2)
+  taxMode TaxMode  @default(INCLUSIVE)
+
+  primaryPhone     String?
+  alternativePhone String?
+  email            String?
+  website          String?
+
+  country String?
+  county  String?
+  city    String?
+  address String?
+
+  ownerName  String?
+  ownerPhone String?
+  ownerEmail String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

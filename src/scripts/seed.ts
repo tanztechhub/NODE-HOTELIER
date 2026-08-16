@@ -1,12 +1,39 @@
 import { prisma } from "../lib/prisma.js";
+import { hashSecret } from "../lib/hash.js";
+
+const oneYearFromNow = new Date();
+oneYearFromNow.setFullYear(oneYearFromNow.getFullYear() + 1);
+
+const licenseFields = {
+  licenseStatus: "TRIAL",
+  subscriptionPlan: "Hotelier Standard — Yearly",
+  maxBranches: 3,
+  maxUsers: 10,
+  maxDevices: 10,
+  nextDueDate: oneYearFromNow,
+} as const;
 
 const tenant = await prisma.tenant.upsert({
   where: { slug: "hotelier-demo" },
-  update: {},
-  create: { name: "HOTELIER Demo", slug: "hotelier-demo" },
+  update: { ...licenseFields },
+  create: { name: "HOTELIER Demo", slug: "hotelier-demo", ...licenseFields },
 });
 
-for (const moduleKey of ["PRODUCTS", "STORE", "POS", "KITCHEN", "ROOMS", "RESERVATIONS", "HOUSEKEEPING"] as const) {
+await prisma.user.upsert({
+  where: { tenantId_email: { tenantId: tenant.id, email: "admin@hotelier-demo.co.ke" } },
+  update: {},
+  create: {
+    tenantId: tenant.id,
+    email: "admin@hotelier-demo.co.ke",
+    password: hashSecret("Admin@123"),
+    firstName: "Evans",
+    lastName: "Nyongesa",
+    role: "SUPER_ADMIN",
+    isActive: true,
+  },
+});
+
+for (const moduleKey of ["PRODUCTS", "STORE", "POS", "KITCHEN", "ROOMS", "RESERVATIONS", "HOUSEKEEPING", "HR"] as const) {
   await prisma.module.upsert({
     where: { key: moduleKey },
     update: {},
@@ -16,6 +43,25 @@ for (const moduleKey of ["PRODUCTS", "STORE", "POS", "KITCHEN", "ROOMS", "RESERV
     where: { tenantId_moduleKey: { tenantId: tenant.id, moduleKey } },
     update: { isEnabled: true },
     create: { tenantId: tenant.id, moduleKey, isEnabled: true },
+  });
+}
+
+const ALL_SECTIONS = ["OVERVIEW", "RECEPTION", "HOUSEKEEPING", "SALES", "KITCHEN", "SERVICE_CENTER", "INVENTORY", "TEAM", "FINANCE", "REPORTS", "SYSTEM"] as const;
+
+for (const role of [
+  { name: "Super Admin", description: "Full access to every section of the workspace.", allowedSections: ALL_SECTIONS },
+  { name: "Manager", description: "Oversees daily operations across the property.", allowedSections: ALL_SECTIONS },
+  { name: "Receptionist", description: "Front desk check-in, reservations, and guest billing.", allowedSections: ["OVERVIEW", "RECEPTION"] },
+  { name: "Chef", description: "Kitchen orders, menu, and recipes.", allowedSections: ["OVERVIEW", "KITCHEN"] },
+  { name: "Waiter", description: "Point of sale, tables, and orders.", allowedSections: ["OVERVIEW", "SALES"] },
+  { name: "Housekeeping", description: "Room tasks and cleanliness tracking.", allowedSections: ["OVERVIEW", "HOUSEKEEPING"] },
+  { name: "Storekeeper", description: "Inventory, stock, and supplier records.", allowedSections: ["OVERVIEW", "INVENTORY"] },
+  { name: "Accountant", description: "Finance, expenses, and reports.", allowedSections: ["OVERVIEW", "FINANCE", "REPORTS"] },
+] as const) {
+  await prisma.role.upsert({
+    where: { tenantId_name: { tenantId: tenant.id, name: role.name } },
+    update: { description: role.description, allowedSections: [...role.allowedSections], isSystemRole: true },
+    create: { tenantId: tenant.id, name: role.name, description: role.description, allowedSections: [...role.allowedSections], isSystemRole: true },
   });
 }
 
