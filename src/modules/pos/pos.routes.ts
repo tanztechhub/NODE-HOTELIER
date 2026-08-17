@@ -33,7 +33,7 @@ const itemSchema = z.object({
 
 const menuItemSchema = z.object({
   category: z.string().trim().min(2).max(60),
-  inventoryItemId: z.string().cuid().optional(),
+  productId: z.string().cuid().optional(),
   name: z.string().trim().min(2).max(120),
   description: z.string().trim().max(280).optional(),
   price: z.coerce.number().positive(),
@@ -106,7 +106,7 @@ posRouter.get("/settings", async (req, res) => {
   const [settings, stores, inventory] = await Promise.all([
     prisma.cafeSettings.findUnique({ where: { tenantId } }),
     prisma.store.findMany({ where: { tenantId }, orderBy: { name: "asc" } }),
-    prisma.inventoryItem.findMany({ where: { tenantId }, include: { store: true }, orderBy: { name: "asc" } }),
+    prisma.product.findMany({ where: { tenantId }, include: { store: true }, orderBy: { name: "asc" } }),
   ]);
 
   res.status(200).json({ settings, stores, inventory });
@@ -156,7 +156,7 @@ posRouter.post("/inventory/items", async (req, res) => {
     return;
   }
 
-  const item = await prisma.inventoryItem.create({ data: { tenantId, ...parsed.data } });
+  const item = await prisma.product.create({ data: { tenantId, ...parsed.data } });
   res.status(201).json({ item });
 });
 
@@ -164,7 +164,7 @@ posRouter.post("/inventory/items", async (req, res) => {
 posRouter.get("/menu-items", async (req, res) => {
   const items = await prisma.menuItem.findMany({
     where: { tenantId: tenantIdFor(req), isAvailable: true },
-    include: { category: true, inventoryItem: true, ingredients: { include: { inventoryItem: true } } },
+    include: { category: true, product: true, ingredients: { include: { product: true } } },
     orderBy: [{ category: { sortOrder: "asc" } }, { name: "asc" }],
   });
   res.status(200).json({ items });
@@ -179,22 +179,22 @@ posRouter.post("/menu-items", async (req, res) => {
   }
 
   const tenantId = tenantIdFor(req);
-  if (parsed.data.inventoryItemId) {
-    const inventoryItem = await prisma.inventoryItem.findFirst({
-      where: { id: parsed.data.inventoryItemId, tenantId, isActive: true },
+  if (parsed.data.productId) {
+    const product = await prisma.product.findFirst({
+      where: { id: parsed.data.productId, tenantId, isActive: true },
     });
-    if (!inventoryItem) {
+    if (!product) {
       res.status(400).json({ error: "Choose an active inventory item belonging to this café" });
       return;
     }
   }
 
-  const { category, inventoryItemId, ...menuItemData } = parsed.data;
+  const { category, productId, ...menuItemData } = parsed.data;
   const item = await prisma.menuItem.create({
     data: {
       ...menuItemData,
       tenant: { connect: { id: tenantId } },
-      ...(inventoryItemId ? { inventoryItem: { connect: { id: inventoryItemId } } } : {}),
+      ...(productId ? { product: { connect: { id: productId } } } : {}),
       category: {
         connectOrCreate: {
           where: { tenantId_name: { tenantId, name: category } },
@@ -202,7 +202,7 @@ posRouter.post("/menu-items", async (req, res) => {
         },
       },
     },
-    include: { category: true, inventoryItem: true },
+    include: { category: true, product: true },
   });
 
   res.status(201).json({ item });
@@ -220,7 +220,7 @@ posRouter.post("/inventory/items/:id/adjust", async (req, res) => {
   // The conditional update prevents simultaneous requests from taking stock
   // below zero (a read-then-update check alone is vulnerable to a race).
   const minimumQuantity = parsed.data.quantity < 0 ? Math.abs(parsed.data.quantity) : undefined;
-  const updated = await prisma.inventoryItem.updateMany({
+  const updated = await prisma.product.updateMany({
     where: {
       id: req.params.id,
       tenantId,
@@ -230,13 +230,13 @@ posRouter.post("/inventory/items/:id/adjust", async (req, res) => {
   });
 
   if (updated.count === 0) {
-    const exists = await prisma.inventoryItem.findFirst({ where: { id: req.params.id, tenantId } });
+    const exists = await prisma.product.findFirst({ where: { id: req.params.id, tenantId } });
     res.status(exists ? 400 : 404).json({
       error: exists ? "Stock cannot fall below zero" : "Inventory item not found",
     });
     return;
   }
 
-  const item = await prisma.inventoryItem.findUniqueOrThrow({ where: { id: req.params.id } });
+  const item = await prisma.product.findUniqueOrThrow({ where: { id: req.params.id } });
   res.status(200).json({ item });
 });

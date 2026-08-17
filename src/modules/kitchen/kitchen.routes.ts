@@ -9,7 +9,7 @@ const tenantId = (req: { tenantId?: string }) => { if (!req.tenantId) throw new 
 
 const orderInclude = {
   items: { include: {
-    menuItem: { include: { category: true, inventoryItem: true, ingredients: { include: { inventoryItem: true } } } },
+    menuItem: { include: { category: true, product: true, ingredients: { include: { product: true } } } },
     addons: { include: { addon: true } },
   } },
 } as const;
@@ -36,8 +36,8 @@ kitchenRouter.patch("/orders/:id/ready", async (req, res) => {
   const requirements = new Map<string, { quantity: number; name: string; storeId: string }>();
   for (const orderItem of activeOrder.items) {
     const recipe = orderItem.menuItem.ingredients.length
-      ? orderItem.menuItem.ingredients.map((ingredient) => ({ item: ingredient.inventoryItem, quantity: Number(ingredient.quantity) }))
-      : orderItem.menuItem.inventoryItem ? [{ item: orderItem.menuItem.inventoryItem, quantity: 1 }] : [];
+      ? orderItem.menuItem.ingredients.map((ingredient) => ({ item: ingredient.product, quantity: Number(ingredient.quantity) }))
+      : orderItem.menuItem.product ? [{ item: orderItem.menuItem.product, quantity: 1 }] : [];
     for (const ingredient of recipe) {
       const required = ingredient.quantity * orderItem.quantity;
       const current = requirements.get(ingredient.item.id);
@@ -47,10 +47,10 @@ kitchenRouter.patch("/orders/:id/ready", async (req, res) => {
 
   try {
     await prisma.$transaction(async (tx) => {
-      for (const [inventoryItemId, requirement] of requirements) {
-        const stock = await tx.inventoryItem.updateMany({ where: { id: inventoryItemId, tenantId: tid, quantity: { gte: requirement.quantity } }, data: { quantity: { decrement: requirement.quantity } } });
+      for (const [productId, requirement] of requirements) {
+        const stock = await tx.product.updateMany({ where: { id: productId, tenantId: tid, quantity: { gte: requirement.quantity } }, data: { quantity: { decrement: requirement.quantity } } });
         if (!stock.count) throw new Error(`Not enough ${requirement.name} in stock`);
-        await tx.inventoryMovement.create({ data: { tenantId: tid, inventoryItemId, storeId: requirement.storeId, type: "DISPATCH", quantity: -requirement.quantity, note: `Used for POS order #${activeOrder.orderNumber}`, performedBy: req.userId } });
+        await tx.inventoryMovement.create({ data: { tenantId: tid, productId, storeId: requirement.storeId, type: "DISPATCH", quantity: -requirement.quantity, note: `Used for POS order #${activeOrder.orderNumber}`, performedBy: req.userId } });
       }
       await tx.posOrder.update({ where: { id: activeOrder.id }, data: { status: "READY", readyAt: new Date() } });
     });
@@ -65,12 +65,12 @@ kitchenRouter.patch("/orders/:id/ready", async (req, res) => {
 
 /** Product-backed menu and recipe snapshot used by the kitchen side panel. */
 kitchenRouter.get("/menu-items", async (req, res) => {
-  const items = await prisma.menuItem.findMany({ where: { tenantId: tenantId(req), isAvailable: true }, include: { category: true, inventoryItem: true, ingredients: { include: { inventoryItem: true } } }, orderBy: [{ category: { sortOrder: "asc" } }, { name: "asc" }] });
+  const items = await prisma.menuItem.findMany({ where: { tenantId: tenantId(req), isAvailable: true }, include: { category: true, product: true, ingredients: { include: { product: true } } }, orderBy: [{ category: { sortOrder: "asc" } }, { name: "asc" }] });
   res.json({ items });
 });
 
 kitchenRouter.get("/drink-offerings", async (req, res) => {
-  const drinks = await prisma.menuItem.findMany({ where: { tenantId: tenantId(req), isAvailable: true }, select: { id: true, name: true, description: true, temperature: true, category: { select: { name: true } }, inventoryItem: { select: { id: true, name: true, quantity: true, unit: true } }, ingredients: { include: { inventoryItem: { select: { id: true, name: true, quantity: true, unit: true } } } } }, orderBy: [{ temperature: "asc" }, { name: "asc" }] });
+  const drinks = await prisma.menuItem.findMany({ where: { tenantId: tenantId(req), isAvailable: true }, select: { id: true, name: true, description: true, temperature: true, category: { select: { name: true } }, product: { select: { id: true, name: true, quantity: true, unit: true } }, ingredients: { include: { product: { select: { id: true, name: true, quantity: true, unit: true } } } } }, orderBy: [{ temperature: "asc" }, { name: "asc" }] });
   const offerings = { hot: drinks.filter((drink) => drink.temperature === "HOT"), cold: drinks.filter((drink) => drink.temperature === "COLD"), other: drinks.filter((drink) => drink.temperature === "OTHER") };
   res.json({ offerings, summary: { hot: offerings.hot.length, cold: offerings.cold.length, other: offerings.other.length } });
 });

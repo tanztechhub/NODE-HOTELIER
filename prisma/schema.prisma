@@ -192,7 +192,8 @@ model Tenant {
   tenantModules TenantModule[]
   cafeSettings  CafeSettings?
   stores        Store[]
-  inventoryItems InventoryItem[]
+  categories    Category[]
+  products      Product[]
   inventoryMovements InventoryMovement[]
   posOrders      PosOrder[]
   addons         Addon[]
@@ -322,50 +323,96 @@ model Store {
   createdAt DateTime        @default(now())
   updatedAt DateTime        @updatedAt
   tenant    Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  items     InventoryItem[]
+  products  Product[]
   movements InventoryMovement[]
 
   @@unique([tenantId, code])
 }
 
-model InventoryItem {
-  id           String   @id @default(cuid())
-  tenantId     String
-  storeId      String
-  name         String
-  sku          String
-  unit         String   @default("each")
-  quantity     Decimal  @default(0) @db.Decimal(12, 3)
-  reorderLevel Decimal  @default(0) @db.Decimal(12, 3)
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  store        Store    @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  menuItems    MenuItem[]
-  movements    InventoryMovement[]
+// Up to 3 levels deep (parent -> child -> grandchild), enforced in the route
+// layer. Self-referential; onDelete: Cascade so removing a category also
+// removes its descendants (products under it are only SetNull, never deleted).
+model Category {
+  id          String     @id @default(cuid())
+  tenantId    String
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  parentId    String?
+  parent      Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children    Category[] @relation("CategoryHierarchy")
+  level       Int        @default(1)
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  products    Product[]
+
+  @@unique([tenantId, parentId, name])
+  @@index([tenantId, parentId])
+}
+
+model Product {
+  id         String    @id @default(cuid())
+  tenantId   String
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  storeId    String
+  store      Store     @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  // Identity
+  name        String
+  sku         String?
+  barcode     String?
+  brand       String?
+  description String?
+  photoUrl    String?
+
+  // Classification
+  unit          String  @default("each")
+  isPerishable  Boolean @default(false)
+  shelfLifeDays Int?
+
+  // Stock — quantity is the live running balance; opening stock is recorded
+  // as this value at creation plus a matching RECEIPT movement for the audit trail.
+  quantity      Decimal  @default(0) @db.Decimal(12, 3)
+  reorderLevel  Decimal  @default(0) @db.Decimal(12, 3)
+  maxStockLevel Decimal? @db.Decimal(12, 3)
+
+  // Costing (inventory valuation — not a selling price)
+  unitCost          Decimal? @db.Decimal(12, 2)
+  preferredSupplier String?
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  menuItems       MenuItem[]
+  movements       InventoryMovement[]
   menuIngredients MenuItemIngredient[]
 
   @@unique([tenantId, sku])
+  @@unique([tenantId, barcode])
   @@index([tenantId, storeId])
+  @@index([tenantId, categoryId])
 }
 
 model InventoryMovement {
-  id              String                @id @default(cuid())
-  tenantId        String
-  inventoryItemId String
-  storeId         String
-  type            InventoryMovementType
-  quantity        Decimal               @db.Decimal(12, 3)
-  note            String?
-  performedBy     String?
-  occurredAt      DateTime              @default(now())
-  createdAt       DateTime              @default(now())
-  tenant          Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  inventoryItem   InventoryItem         @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
-  store           Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  id          String                @id @default(cuid())
+  tenantId    String
+  productId   String
+  storeId     String
+  type        InventoryMovementType
+  quantity    Decimal               @db.Decimal(12, 3)
+  note        String?
+  performedBy String?
+  occurredAt  DateTime              @default(now())
+  createdAt   DateTime              @default(now())
+  tenant      Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product     Product               @relation(fields: [productId], references: [id], onDelete: Cascade)
+  store       Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict)
 
-  @@index([tenantId, inventoryItemId, occurredAt])
+  @@index([tenantId, productId, occurredAt])
   @@index([tenantId, storeId, occurredAt])
 }
 
@@ -386,7 +433,7 @@ model MenuItem {
   id              String           @id @default(cuid())
   tenantId        String
   categoryId      String
-  inventoryItemId String?
+  productId       String?
   name            String
   description     String?
   price           Decimal          @db.Decimal(12, 2)
@@ -396,7 +443,7 @@ model MenuItem {
   updatedAt       DateTime         @updatedAt
   tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   category        MenuCategory     @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  inventoryItem   InventoryItem?   @relation(fields: [inventoryItemId], references: [id], onDelete: SetNull)
+  product         Product?         @relation(fields: [productId], references: [id], onDelete: SetNull)
   ingredients     MenuItemIngredient[]
   orderItems      PosOrderItem[]
 
@@ -466,17 +513,17 @@ model PosOrderItemAddon {
 }
 
 model MenuItemIngredient {
-  id              String        @id @default(cuid())
-  menuItemId      String
-  inventoryItemId String
-  quantity        Decimal       @db.Decimal(12, 3)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  menuItem        MenuItem      @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
-  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+  id         String   @id @default(cuid())
+  menuItemId String
+  productId  String
+  quantity   Decimal  @db.Decimal(12, 3)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
 
-  @@unique([menuItemId, inventoryItemId])
-  @@index([inventoryItemId])
+  @@unique([menuItemId, productId])
+  @@index([productId])
 }
 
 model Module {
