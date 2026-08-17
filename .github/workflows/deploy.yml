@@ -21,5 +21,6 @@ jobs:
             git pull origin main
             npm install
             npx prisma migrate deploy
+            npm run seed
             npm run build
             pm2 restart hotelier-server
