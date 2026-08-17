@@ -21,9 +21,10 @@ export function tenantContext(req: Request, _res: Response, next: NextFunction):
 }
 
 /**
- * Temporary role guard until session/JWT authentication is introduced.
- * The acting staff member is resolved from x-user-id within the current tenant;
- * only active owners and super admins may perform protected operations.
+ * Temporary role guard until full permission checks are wired up everywhere.
+ * The acting employee is resolved from x-user-id (set from the logged-in
+ * session) within the current tenant; only Super Admin / Manager may
+ * perform protected operations.
  */
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
   if (!req.tenantId || !req.userId) {
@@ -31,13 +32,13 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
     return;
   }
 
-  prisma.user
+  prisma.employee
     .findFirst({
       where: {
         id: req.userId,
         tenantId: req.tenantId,
-        isActive: true,
-        role: { in: ["SUPER_ADMIN", "OWNER"] },
+        status: "ACTIVE",
+        role: { name: { in: ["Super Admin", "Manager"] } },
       },
       select: { id: true },
     })

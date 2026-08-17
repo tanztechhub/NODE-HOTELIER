@@ -19,20 +19,6 @@ const tenant = await prisma.tenant.upsert({
   create: { name: "HOTELIER Demo", slug: "hotelier-demo", ...licenseFields },
 });
 
-await prisma.user.upsert({
-  where: { tenantId_email: { tenantId: tenant.id, email: "admin@hotelier-demo.co.ke" } },
-  update: {},
-  create: {
-    tenantId: tenant.id,
-    email: "admin@hotelier-demo.co.ke",
-    password: hashSecret("Admin@123"),
-    firstName: "Evans",
-    lastName: "Nyongesa",
-    role: "SUPER_ADMIN",
-    isActive: true,
-  },
-});
-
 for (const moduleKey of ["PRODUCTS", "STORE", "POS", "KITCHEN", "ROOMS", "RESERVATIONS", "HOUSEKEEPING", "HR"] as const) {
   await prisma.module.upsert({
     where: { key: moduleKey },
@@ -64,6 +50,32 @@ for (const role of [
     create: { tenantId: tenant.id, name: role.name, description: role.description, allowedSections: [...role.allowedSections], isSystemRole: true },
   });
 }
+
+// Bootstrap login: every tenant gets a default SYSTEM employee (code
+// "SYSTEM", PIN "000000") with the Super Admin role, so a freshly
+// onboarded tenant can always sign in and set up its real staff.
+const superAdminRole = await prisma.role.findUniqueOrThrow({
+  where: { tenantId_name: { tenantId: tenant.id, name: "Super Admin" } },
+});
+
+await prisma.employee.upsert({
+  where: { tenantId_employeeCode: { tenantId: tenant.id, employeeCode: "SYSTEM" } },
+  update: {},
+  create: {
+    tenantId: tenant.id,
+    employeeCode: "SYSTEM",
+    pin: hashSecret("000000"),
+    firstName: "System",
+    lastName: "Administrator",
+    phone: "0000000000",
+    department: "MANAGEMENT",
+    jobTitle: "System Administrator",
+    dateHired: new Date(),
+    salaryAmount: 0,
+    roleId: superAdminRole.id,
+    status: "ACTIVE",
+  },
+});
 
 for (const store of [
   { name: "Main Store", code: "MAIN" },

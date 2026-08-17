@@ -9,11 +9,11 @@ export const authRouter = Router();
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 const loginSchema = z.object({
-  email: z.email().transform((v) => v.trim().toLowerCase()),
-  password: z.string().min(1),
+  employeeCode: z.string().trim().min(1),
+  pin: z.string().trim().min(1),
 });
 
-const userFields = { id: true, firstName: true, lastName: true, email: true, role: true } as const;
+const roleSelect = { select: { id: true, name: true, allowedSections: true } } as const;
 
 const tenantId = (req: { tenantId?: string }) => {
   if (!req.tenantId) throw new Error("Tenant context is required");
@@ -26,23 +26,37 @@ function bearerToken(req: { header(name: string): string | undefined }): string 
   return header.slice("Bearer ".length).trim();
 }
 
+function publicEmployee(employee: {
+  id: string; firstName: string; lastName: string; employeeCode: string; jobTitle: string;
+  department: string; role: { id: string; name: string; allowedSections: string[] } | null;
+}) {
+  return {
+    id: employee.id,
+    firstName: employee.firstName,
+    lastName: employee.lastName,
+    employeeCode: employee.employeeCode,
+    jobTitle: employee.jobTitle,
+    department: employee.department,
+    role: employee.role,
+  };
+}
+
 authRouter.post("/login", async (req, res, next) => {
   const data = loginSchema.safeParse(req.body);
-  if (!data.success) { res.status(400).json({ error: "Enter a valid email and password" }); return; }
+  if (!data.success) { res.status(400).json({ error: "Enter your employee code and PIN" }); return; }
   try {
-    const user = await prisma.user.findFirst({ where: { tenantId: tenantId(req), email: data.data.email } });
-    if (!user || !user.isActive || !verifySecret(data.data.password, user.password)) {
-      res.status(401).json({ error: "Incorrect email or password" });
+    const employee = await prisma.employee.findFirst({
+      where: { tenantId: tenantId(req), employeeCode: { equals: data.data.employeeCode, mode: "insensitive" } },
+      include: { role: roleSelect },
+    });
+    if (!employee || employee.status !== "ACTIVE" || !verifySecret(data.data.pin, employee.pin)) {
+      res.status(401).json({ error: "Incorrect employee code or PIN" });
       return;
     }
     const token = randomBytes(32).toString("hex");
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-    await prisma.session.create({ data: { token, userId: user.id, tenantId: tenantId(req), expiresAt } });
-    res.json({
-      token,
-      expiresAt,
-      user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, role: user.role },
-    });
+    await prisma.session.create({ data: { token, employeeId: employee.id, tenantId: tenantId(req), expiresAt } });
+    res.json({ token, expiresAt, user: publicEmployee(employee) });
   } catch (error) {
     next(error);
   }
@@ -51,9 +65,9 @@ authRouter.post("/login", async (req, res, next) => {
 authRouter.get("/me", async (req, res) => {
   const token = bearerToken(req);
   if (!token) { res.status(401).json({ error: "Not authenticated" }); return; }
-  const session = await prisma.session.findUnique({ where: { token }, include: { user: { select: userFields } } });
+  const session = await prisma.session.findUnique({ where: { token }, include: { employee: { include: { role: roleSelect } } } });
   if (!session || session.expiresAt < new Date()) { res.status(401).json({ error: "Session expired" }); return; }
-  res.json({ user: session.user, tenantId: session.tenantId, expiresAt: session.expiresAt });
+  res.json({ user: publicEmployee(session.employee), tenantId: session.tenantId, expiresAt: session.expiresAt });
 });
 
 authRouter.post("/logout", async (req, res) => {

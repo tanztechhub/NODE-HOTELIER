@@ -510,22 +510,21 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  sessions  Session[]
 
   @@unique([tenantId, email])
 }
 
 model Session {
-  id        String   @id @default(cuid())
-  token     String   @unique
-  userId    String
-  tenantId  String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  expiresAt DateTime
-  createdAt DateTime @default(now())
+  id         String   @id @default(cuid())
+  token      String   @unique
+  employeeId String
+  tenantId   String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
 
-  @@index([userId])
+  @@index([employeeId])
   @@index([tenantId])
 }
 
@@ -559,6 +558,7 @@ model Employee {
   reports        Employee[] @relation("EmployeeSupervisor")
   roleId         String?
   role           Role?      @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  sessions       Session[]
 
   // Compensation
   salaryType        SalaryType    @default(MONTHLY)
