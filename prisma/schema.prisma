@@ -19,6 +19,28 @@ enum ModuleKey {
   RESERVATIONS
   ACCOUNTING
   REPORTS
+  SERVICE_CENTER
+}
+
+enum AppointmentStatus {
+  BOOKED
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+enum MembershipStatus {
+  ACTIVE
+  PAUSED
+  EXPIRED
+  CANCELLED
+}
+enum PaymentStatus {
+  PENDING
+  PAID
+  REFUNDED
+  FAILED
 }
 
 enum DrinkTemperature {
@@ -264,6 +286,13 @@ model Tenant {
   suppliers          Supplier[]
   purchases          Purchase[]
   purchaseRequisitions PurchaseRequisition[]
+  serviceCenterServices ServiceCenterService[]
+  serviceProviders ServiceProvider[]
+  providerSchedules ProviderSchedule[]
+  membershipPlans MembershipPlan[]
+  memberships Membership[]
+  membershipPayments MembershipPayment[]
+  appointments Appointment[]
 }
 
 enum CustomerType {
@@ -364,6 +393,8 @@ model Customer {
   createdByEmployee Employee? @relation("CustomerCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
   updatedByEmployee Employee? @relation("CustomerUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
   location          Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  memberships Membership[]
+  appointments Appointment[]
 
   @@unique([tenantId, customerNo])
   @@index([tenantId, lastName, firstName])
@@ -763,6 +794,8 @@ model PaymentMethod {
   transactions      Transaction[]
   expenses          Expense[]
   assetMovements    AssetMovement[]
+  membershipPayments MembershipPayment[]
+  appointments Appointment[]
 
   @@unique([tenantId, code])
   @@unique([tenantId, name])
@@ -1764,4 +1797,121 @@ model PlatformSession {
   createdAt DateTime      @default(now())
 
   @@index([adminId])
+}
+
+model ServiceCenterService {
+  id String @id @default(cuid())
+  tenantId String
+  name String
+  description String?
+  durationMinutes Int
+  price Decimal @db.Decimal(12, 2)
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+  @@unique([tenantId, name])
+  @@index([tenantId, isActive])
+}
+model ServiceProvider {
+  id String @id @default(cuid())
+  tenantId String
+  name String
+  specialty String?
+  phone String?
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  schedules ProviderSchedule[]
+  appointments Appointment[]
+  @@index([tenantId, isActive])
+}
+model ProviderSchedule {
+  id String @id @default(cuid())
+  tenantId String
+  providerId String
+  startsAt DateTime
+  endsAt DateTime
+  isAvailable Boolean @default(true)
+  notes String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  provider ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  @@index([tenantId, providerId, startsAt])
+}
+model MembershipPlan {
+  id String @id @default(cuid())
+  tenantId String
+  name String
+  description String?
+  price Decimal @db.Decimal(12, 2)
+  durationDays Int
+  discountPercent Decimal @default(0) @db.Decimal(5, 2)
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  memberships Membership[]
+  @@unique([tenantId, name])
+}
+model Membership {
+  id String @id @default(cuid())
+  tenantId String
+  customerId String
+  planId String
+  startsAt DateTime
+  endsAt DateTime
+  status MembershipStatus @default(ACTIVE)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  plan MembershipPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+  payments MembershipPayment[]
+  appointments Appointment[]
+  @@index([tenantId, customerId, status])
+}
+model MembershipPayment {
+  id String @id @default(cuid())
+  tenantId String
+  membershipId String
+  paymentMethodId String
+  amount Decimal @db.Decimal(12, 2)
+  status PaymentStatus @default(PAID)
+  reference String?
+  paidAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  paymentMethod PaymentMethod @relation(fields: [paymentMethodId], references: [id], onDelete: Restrict)
+  @@index([tenantId, membershipId, createdAt])
+}
+model Appointment {
+  id String @id @default(cuid())
+  tenantId String
+  customerId String
+  serviceId String
+  providerId String
+  membershipId String?
+  paymentMethodId String?
+  startsAt DateTime
+  endsAt DateTime
+  status AppointmentStatus @default(BOOKED)
+  amount Decimal @db.Decimal(12, 2)
+  paymentStatus PaymentStatus @default(PENDING)
+  notes String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  service ServiceCenterService @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  provider ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  membership Membership? @relation(fields: [membershipId], references: [id], onDelete: SetNull)
+  paymentMethod PaymentMethod? @relation(fields: [paymentMethodId], references: [id], onDelete: SetNull)
+  @@index([tenantId, startsAt, status])
+  @@index([tenantId, providerId, startsAt])
 }

@@ -32,6 +32,7 @@ import { businessProfileRouter } from "../modules/business-profile/business-prof
 import { tenantRouter } from "../modules/tenant/tenant.routes.js";
 import { rolesRouter } from "../modules/roles/roles.routes.js";
 import { authRouter } from "../modules/auth/auth.routes.js";
+import { serviceCenterRouter } from "../modules/service-center/service-center.routes.js";
 
 export const router = Router();
 
@@ -71,3 +72,4 @@ router.use("/business-profile", businessProfileRouter);
 router.use("/tenant", tenantRouter);
 router.use("/roles", rolesRouter);
 router.use("/auth", authRouter);
+router.use("/service-center", serviceCenterRouter);
