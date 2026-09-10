@@ -38,6 +38,13 @@ const orderLineSchema = z.object({
 const orderSchema = z.object({ tableId: z.string().cuid().optional(), locationId: z.string().cuid().optional(), customerId: z.string().trim().min(1).optional(), reservationId: z.string().trim().min(1).optional(), notes: z.string().trim().max(500).optional(), discount: z.coerce.number().min(0).default(0), items: z.array(orderLineSchema).min(1) });
 const addItemsSchema = z.object({ items: z.array(orderLineSchema).min(1) });
 
+// Editing one existing line: any facet omitted keeps its current value.
+const editItemSchema = z.object({
+  variantId: z.string().cuid().nullable().optional(),
+  quantity: z.coerce.number().int().min(1).max(50).optional(),
+  addons: z.array(z.object({ addonId: z.string().cuid(), quantity: z.coerce.number().int().min(1).max(20).default(1) })).optional(),
+});
+
 type OrderLineInput = z.infer<typeof orderLineSchema>;
 
 // What resolveMenuLines needs to price a line: the item's active variants
@@ -448,6 +455,142 @@ posRouter.post("/orders/:id/items", async (req, res) => {
       return tx.posOrder.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
     });
     res.status(201).json({ order: withFinancials(updated, tax) });
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Not enough ")) { res.status(409).json({ error: error.message }); return; }
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
+    throw error;
+  }
+});
+
+/** Reconciles stock when a line on an already-SERVED order changes: pushes
+ * out the extra where consumption went up, returns stock where it went down.
+ * Only quantity affects this — a variant or add-on swap doesn't change the
+ * recipe. Throws "Not enough X" (→ 409) if a top-up can't be covered. */
+async function applyStockDelta(
+  tx: Prisma.TransactionClient,
+  tid: string,
+  locationId: string,
+  before: Map<string, { quantity: number; name: string }>,
+  after: Map<string, { quantity: number; name: string }>,
+  orderNumber: number,
+  req: { userId?: string },
+) {
+  const productIds = new Set([...before.keys(), ...after.keys()]);
+  for (const productId of productIds) {
+    const b = before.get(productId);
+    const a = after.get(productId);
+    const name = a?.name ?? b?.name ?? "stock";
+    const delta = (a?.quantity ?? 0) - (b?.quantity ?? 0);
+    if (delta === 0) continue;
+    try {
+      await recordStockMovement(tx, {
+        tenantId: tid, productId, locationId,
+        type: delta > 0 ? "SALE" : "RETURN",
+        quantity: -delta,
+        note: `POS order #${orderNumber} line ${delta > 0 ? "increased" : "reduced"}`,
+        sourceType: "POS_ORDER", sourceRefId: String(orderNumber),
+        performedBy: req.userId ?? null, label: name,
+      });
+    } catch (error) {
+      if (error instanceof InsufficientStockError) throw new Error(`Not enough ${name} at this location`);
+      throw error;
+    }
+  }
+}
+
+/** Edits one line on a still-open order — swap the size/variant, add or drop
+ * add-ons, change the quantity. Menu-item lines only. Re-validates and
+ * re-prices against the current menu (and re-snapshots its tax), and on a
+ * serve-now order reconciles the stock difference. */
+posRouter.patch("/orders/:id/items/:itemId", async (req, res) => {
+  const parsed = editItemSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Invalid change", details: parsed.error.flatten() }); return; }
+  const tid = tenantIdFor(req);
+  const order = await prisma.posOrder.findFirst({ where: { id: req.params.id, tenantId: tid }, include: orderInclude });
+  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
+  if (order.channel !== "FOOD") { res.status(409).json({ error: "Only food/bar order lines can be edited here" }); return; }
+  if (["COMPLETED", "CANCELLED"].includes(order.status)) { res.status(409).json({ error: "This order is finalized — it can't be changed" }); return; }
+  const existing = order.items.find((row) => row.id === req.params.itemId);
+  if (!existing) { res.status(404).json({ error: "That line isn't on this order" }); return; }
+  if (!existing.menuItemId) { res.status(409).json({ error: "Only menu-item lines can be edited" }); return; }
+
+  const desired: OrderLineInput = {
+    menuItemId: existing.menuItemId,
+    variantId: ("variantId" in parsed.data ? parsed.data.variantId : existing.variantId) ?? undefined,
+    quantity: parsed.data.quantity ?? existing.quantity,
+    addons: parsed.data.addons ?? existing.addons.map((a) => ({ addonId: a.addonId, quantity: a.quantity })),
+  };
+
+  const tax = await taxSettingsFor(tid);
+  let resolved: ResolvedLine;
+  let menuItemsById: Awaited<ReturnType<typeof resolveMenuLines>>["menuItemsById"];
+  try {
+    const out = await resolveMenuLines(tid, [desired], tax);
+    resolved = out.lines[0];
+    menuItemsById = out.menuItemsById;
+  } catch (error) {
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
+    throw error;
+  }
+
+  try {
+    const updated = await prisma.$transaction(async (tx) => {
+      if (order.status === "SERVED") {
+        const stockLocationId = await resolveStockLocationId(tid, order.locationId);
+        if (!stockLocationId) throw Object.assign(new Error("No location is configured to hold stock for this order"), { status: 400 });
+        const mi = menuItemsById.get(existing.menuItemId!)!;
+        const before = computeStockRequirements([{ quantity: existing.quantity, menuItem: mi }]);
+        const after = computeStockRequirements([{ quantity: resolved.quantity, menuItem: mi }]);
+        await applyStockDelta(tx, tid, stockLocationId, before, after, order.orderNumber, req);
+      }
+      await tx.posOrderItemAddon.deleteMany({ where: { orderItemId: existing.id } });
+      await tx.posOrderItem.update({
+        where: { id: existing.id },
+        data: {
+          variantId: resolved.variantId ?? null,
+          quantity: resolved.quantity,
+          unitPrice: resolved.unitPrice,
+          taxRate: resolved.taxRate,
+          taxMode: resolved.taxMode,
+          taxTreatment: resolved.taxTreatment,
+          addons: { create: resolved.addons.map((addon) => ({ addonId: addon.addonId, quantity: addon.quantity, unitPrice: addon.unitPrice })) },
+        },
+      });
+      return tx.posOrder.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
+    });
+    res.status(200).json({ order: withFinancials(updated, tax) });
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Not enough ")) { res.status(409).json({ error: error.message }); return; }
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
+    throw error;
+  }
+});
+
+/** Removes one line from a still-open order. Returns its stock on a serve-now
+ * order. An order can't be emptied this way — cancel it instead. */
+posRouter.delete("/orders/:id/items/:itemId", async (req, res) => {
+  const tid = tenantIdFor(req);
+  const order = await prisma.posOrder.findFirst({ where: { id: req.params.id, tenantId: tid }, include: orderInclude });
+  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
+  if (order.channel !== "FOOD") { res.status(409).json({ error: "Only food/bar order lines can be edited here" }); return; }
+  if (["COMPLETED", "CANCELLED"].includes(order.status)) { res.status(409).json({ error: "This order is finalized — it can't be changed" }); return; }
+  const existing = order.items.find((row) => row.id === req.params.itemId);
+  if (!existing) { res.status(404).json({ error: "That line isn't on this order" }); return; }
+  if (order.items.length <= 1) { res.status(409).json({ error: "Cancel the order instead of removing its only line" }); return; }
+
+  const tax = await taxSettingsFor(tid);
+  try {
+    const updated = await prisma.$transaction(async (tx) => {
+      if (order.status === "SERVED" && existing.menuItem) {
+        const stockLocationId = await resolveStockLocationId(tid, order.locationId);
+        if (!stockLocationId) throw Object.assign(new Error("No location is configured to hold stock for this order"), { status: 400 });
+        const before = computeStockRequirements([{ quantity: existing.quantity, menuItem: existing.menuItem }]);
+        await applyStockDelta(tx, tid, stockLocationId, before, new Map(), order.orderNumber, req);
+      }
+      await tx.posOrderItem.delete({ where: { id: existing.id } });
+      return tx.posOrder.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
+    });
+    res.status(200).json({ order: withFinancials(updated, tax) });
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Not enough ")) { res.status(409).json({ error: error.message }); return; }
     if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
