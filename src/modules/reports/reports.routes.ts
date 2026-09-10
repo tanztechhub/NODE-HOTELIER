@@ -44,7 +44,7 @@ reportsRouter.get("/sales", async (req, res) => {
       include: { items: { include: { menuItem: true, addons: { include: { addon: true } } } }, payments: true, table: true },
       orderBy: { updatedAt: "desc" },
     }),
-    prisma.businessProfile.findUnique({ where: { tenantId: tid }, select: { taxRate: true, taxMode: true } }),
+    prisma.businessProfile.findUnique({ where: { tenantId: tid }, select: { taxRate: true, taxMode: true, taxTreatment: true } }),
   ]);
 
   const orderTotal = (order: Parameters<typeof computeOrderFinancials>[0]) => computeOrderFinancials(order, tax).total;

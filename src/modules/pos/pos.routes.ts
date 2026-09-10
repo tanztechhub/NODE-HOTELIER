@@ -66,13 +66,19 @@ const menuLineInclude = {
   recipe: { include: { ingredients: { include: { product: true } } } },
 } satisfies Prisma.MenuItemInclude;
 
+type LineTaxSnapshot = {
+  taxRate: Prisma.Decimal | null;
+  taxMode: "INCLUSIVE" | "EXCLUSIVE" | null;
+  taxTreatment: "STANDARD" | "ZERO_RATED" | "EXEMPT" | null;
+};
+
 type ResolvedLine = {
   menuItemId: string;
   variantId: string | undefined;
   quantity: number;
   unitPrice: Prisma.Decimal;
   addons: { addonId: string; quantity: number; unitPrice: Prisma.Decimal }[];
-};
+} & LineTaxSnapshot;
 
 /** Validates a set of POS order lines against the current menu — item
  * availability, variant choice (required once an item has variants), add-on
@@ -80,7 +86,7 @@ type ResolvedLine = {
  * required rules — and returns each line with its resolved prices, plus the
  * menu items (with product/recipe) for downstream stock maths. Throws
  * { status: 400 } on the first rule violation. */
-async function resolveMenuLines(tid: string, lines: OrderLineInput[]) {
+async function resolveMenuLines(tid: string, lines: OrderLineInput[], taxDefaults: TaxDefaults | null) {
   const menuItemIds = [...new Set(lines.map((line) => line.menuItemId))];
   const menuItems = await prisma.menuItem.findMany({
     where: { id: { in: menuItemIds }, tenantId: tid, isAvailable: true },
@@ -139,6 +145,7 @@ async function resolveMenuLines(tid: string, lines: OrderLineInput[]) {
       quantity: line.quantity,
       unitPrice,
       addons: line.addons.map((sel) => ({ addonId: sel.addonId, quantity: sel.quantity, unitPrice: priceByAddon.get(sel.addonId)! })),
+      ...resolveLineTax(item, taxDefaults),
     };
   });
 
@@ -152,6 +159,9 @@ function lineCreatePayload(lines: ResolvedLine[]): Prisma.PosOrderItemCreateWith
     variantId: line.variantId,
     quantity: line.quantity,
     unitPrice: line.unitPrice,
+    taxRate: line.taxRate,
+    taxMode: line.taxMode,
+    taxTreatment: line.taxTreatment,
     addons: { create: line.addons.map((addon) => ({ addonId: addon.addonId, quantity: addon.quantity, unitPrice: addon.unitPrice })) },
   }));
 }
@@ -258,8 +268,24 @@ async function chargeOrderToFolio(
 }
 
 async function taxSettingsFor(tid: string) {
-  const profile = await prisma.businessProfile.findUnique({ where: { tenantId: tid }, select: { taxRate: true, taxMode: true } });
+  const profile = await prisma.businessProfile.findUnique({ where: { tenantId: tid }, select: { taxRate: true, taxMode: true, taxTreatment: true } });
   return profile ?? null;
+}
+
+type TaxDefaults = NonNullable<Awaited<ReturnType<typeof taxSettingsFor>>>;
+
+/** The tax a POS line is sold under: the menu item's own override for any
+ * facet it sets, else the tenant default. Snapshotted onto PosOrderItem so a
+ * later change to either never re-taxes a historical order. */
+function resolveLineTax(
+  item: { taxRate: Prisma.Decimal | null; taxMode: "INCLUSIVE" | "EXCLUSIVE" | null; taxTreatment: "STANDARD" | "ZERO_RATED" | "EXEMPT" | null },
+  fallback: TaxDefaults | null,
+) {
+  return {
+    taxRate: item.taxRate ?? fallback?.taxRate ?? null,
+    taxMode: item.taxMode ?? fallback?.taxMode ?? null,
+    taxTreatment: item.taxTreatment ?? fallback?.taxTreatment ?? null,
+  };
 }
 
 type FinancialOrder = Parameters<typeof computeOrderFinancials>[0] & { payments: { amount: Prisma.Decimal }[] };
@@ -315,9 +341,10 @@ posRouter.post("/orders", async (req, res) => {
   const parsed = orderSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Invalid order", details: parsed.error.flatten() }); return; }
   const tid = tenantIdFor(req);
+  const tax = await taxSettingsFor(tid);
   let resolvedLines: ResolvedLine[];
   try {
-    ({ lines: resolvedLines } = await resolveMenuLines(tid, parsed.data.items));
+    ({ lines: resolvedLines } = await resolveMenuLines(tid, parsed.data.items, tax));
   } catch (error) {
     if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
     throw error;
@@ -358,7 +385,6 @@ posRouter.post("/orders", async (req, res) => {
     throw error;
   }
 
-  const tax = await taxSettingsFor(tid);
   try {
     const order = await prisma.$transaction(async (tx) => {
       const last = await tx.posOrder.findFirst({ where: { tenantId: tid }, orderBy: { orderNumber: "desc" }, select: { orderNumber: true } });
@@ -408,15 +434,15 @@ posRouter.post("/orders/:id/items", async (req, res) => {
   if (order.channel !== "FOOD") { res.status(409).json({ error: "Only food/bar orders can have items added after the fact" }); return; }
   if (["COMPLETED", "CANCELLED"].includes(order.status)) { res.status(409).json({ error: "This order is already finalized — start a new one instead" }); return; }
 
+  const tax = await taxSettingsFor(tid);
   let resolvedLines: ResolvedLine[];
   let menuItemsById: Awaited<ReturnType<typeof resolveMenuLines>>["menuItemsById"];
   try {
-    ({ lines: resolvedLines, menuItemsById } = await resolveMenuLines(tid, parsed.data.items));
+    ({ lines: resolvedLines, menuItemsById } = await resolveMenuLines(tid, parsed.data.items, tax));
   } catch (error) {
     if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
     throw error;
   }
-  const tax = await taxSettingsFor(tid);
 
   // Same menu item, same variant, same set of add-ons is the *same line* —
   // bump its quantity instead of stacking a duplicate row on the bill. A
@@ -440,6 +466,9 @@ posRouter.post("/orders/:id/items", async (req, res) => {
             variantId: line.variantId,
             quantity: line.quantity,
             unitPrice: line.unitPrice,
+            taxRate: line.taxRate,
+            taxMode: line.taxMode,
+            taxTreatment: line.taxTreatment,
             addons: { create: line.addons.map((addon) => ({ addonId: addon.addonId, quantity: addon.quantity, unitPrice: addon.unitPrice })) },
           },
         });
@@ -684,9 +713,10 @@ posRouter.get("/menu-items", async (req, res) => {
   const query = z.object({ locationId: z.string().cuid().optional() }).safeParse(req.query);
   if (!query.success) { res.status(400).json({ error: "Invalid filters" }); return; }
 
-  const [fixedLocationId, locationCount] = await Promise.all([
+  const [fixedLocationId, locationCount, taxDefaults] = await Promise.all([
     employeeLocationId(tid, req.userId),
     prisma.location.count({ where: { tenantId: tid } }),
+    taxSettingsFor(tid),
   ]);
   const effectiveLocationId = fixedLocationId ?? query.data.locationId ?? null;
 
@@ -730,9 +760,15 @@ posRouter.get("/menu-items", async (req, res) => {
   // model (groups + their SINGLE/MULTIPLE + min/max/required rules);
   // `addons` stays the legacy flat list, used only for items not yet moved
   // onto groups (matches resolveMenuLines' fallback).
-  const items = rows.map(({ menuCategory, addonGroupLinks, ...item }) => ({
+  const items = rows.map(({ menuCategory, addonGroupLinks, taxRate, taxMode, taxTreatment, ...item }) => ({
     ...item,
     category: menuCategory,
+    // Resolved effective tax (item override else tenant default) so the cart
+    // can show a correct preview. The server re-resolves and snapshots this
+    // on order create — the client value is never trusted for money.
+    taxRate: taxRate ?? taxDefaults?.taxRate ?? null,
+    taxMode: taxMode ?? taxDefaults?.taxMode ?? null,
+    taxTreatment: taxTreatment ?? taxDefaults?.taxTreatment ?? null,
     addonGroups: addonGroupLinks.map((link) => ({
       id: link.addonGroup.id,
       name: link.addonGroup.name,
@@ -815,6 +851,10 @@ posRouter.post("/retail-orders", async (req, res) => {
     throw error;
   }
   const tax = await taxSettingsFor(tid);
+  // Retail lines carry the tenant's default tax treatment as their snapshot,
+  // the same way a menu line carries its own — keeps receipts and the tax
+  // breakdown complete across every channel.
+  const retailLineTax = { taxRate: tax?.taxRate ?? null, taxMode: tax?.taxMode ?? null, taxTreatment: tax?.taxTreatment ?? null };
 
   try {
     const order = await prisma.$transaction(async (tx) => {
@@ -828,13 +868,13 @@ posRouter.post("/retail-orders", async (req, res) => {
         if (products.length !== new Set(productIds).size) throw Object.assign(new Error("Every item must be an active, sellable product from this property"), { status: 400 });
         for (const p of products) productNames.set(p.id, p.name);
         const prices = new Map(products.map((p) => [p.id, p.sellingPrice!]));
-        itemsCreate = parsed.data.items.map((item) => ({ productId: item.productId, quantity: item.quantity, unitPrice: prices.get(item.productId)! }));
+        itemsCreate = parsed.data.items.map((item) => ({ productId: item.productId, quantity: item.quantity, unitPrice: prices.get(item.productId)!, ...retailLineTax }));
       } else {
         const serviceIds = parsed.data.items.map((item) => item.serviceId);
         const services = await tx.service.findMany({ where: { id: { in: serviceIds }, tenantId: tid, isActive: true } });
         if (services.length !== new Set(serviceIds).size) throw Object.assign(new Error("Every item must be an active service from this property"), { status: 400 });
         const prices = new Map(services.map((s) => [s.id, s.price]));
-        itemsCreate = parsed.data.items.map((item) => ({ serviceId: item.serviceId, quantity: item.quantity, unitPrice: prices.get(item.serviceId)! }));
+        itemsCreate = parsed.data.items.map((item) => ({ serviceId: item.serviceId, quantity: item.quantity, unitPrice: prices.get(item.serviceId)!, ...retailLineTax }));
       }
 
       const last = await tx.posOrder.findFirst({ where: { tenantId: tid }, orderBy: { orderNumber: "desc" }, select: { orderNumber: true } });

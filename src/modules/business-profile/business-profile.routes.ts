@@ -15,6 +15,7 @@ export const businessProfileRouter = Router();
 const businessTypes = ["RESTAURANT", "CAFE", "HOTEL", "MOTEL"] as const;
 const currencies = ["KES", "UGX", "TZS", "USD"] as const;
 const taxModes = ["INCLUSIVE", "EXCLUSIVE"] as const;
+const taxTreatments = ["STANDARD", "ZERO_RATED", "EXEMPT"] as const;
 
 const blankToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 const optionalText = (max: number) => z.preprocess(blankToUndefined, z.string().trim().max(max).optional());
@@ -31,6 +32,7 @@ const profileSchema = z.object({
   kraPin: optionalText(20),
   taxRate: optionalRate,
   taxMode: z.enum(taxModes).default("INCLUSIVE"),
+  taxTreatment: z.enum(taxTreatments).default("STANDARD"),
   primaryPhone: optionalText(30),
   alternativePhone: optionalText(30),
   email: optionalEmail,

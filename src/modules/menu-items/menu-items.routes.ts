@@ -14,10 +14,16 @@ menuItemsRouter.use(requireModule("POS"));
 
 const DRINK_TEMPS = ["HOT", "COLD", "OTHER"] as const;
 
+const DRINK_TAX_MODES = ["INCLUSIVE", "EXCLUSIVE"] as const;
+const TAX_TREATMENTS = ["STANDARD", "ZERO_RATED", "EXEMPT"] as const;
+
 const blankToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
+const blankToNull = (v: unknown) => (v === "" || v == null ? null : v);
 const optionalText = (max: number) => z.preprocess(blankToUndefined, z.string().trim().max(max).optional());
-const optionalNumber = (opts: { min?: number; max?: number } = {}) =>
-  z.preprocess(blankToUndefined, z.coerce.number().min(opts.min ?? -Infinity).max(opts.max ?? Infinity).optional());
+// Tax facets: null = inherit the tenant's BusinessProfile default, a value = override.
+const nullableRate = z.preprocess(blankToNull, z.coerce.number().min(0).max(100).nullable());
+const nullableEnum = <T extends readonly [string, ...string[]]>(values: T) =>
+  z.preprocess(blankToNull, z.enum(values).nullable());
 
 const createSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -26,7 +32,9 @@ const createSchema = z.object({
   description: optionalText(500),
   sku: optionalText(60),
   price: z.coerce.number().min(0, "Price cannot be negative").max(9_999_999),
-  taxRate: optionalNumber({ min: 0, max: 100 }),
+  taxRate: nullableRate.optional(),
+  taxMode: nullableEnum(DRINK_TAX_MODES).optional(),
+  taxTreatment: nullableEnum(TAX_TREATMENTS).optional(),
   photoUrl: optionalText(2000),
   temperature: z.enum(DRINK_TEMPS).default("OTHER"),
   isVegetarian: z.boolean().default(false),
@@ -52,6 +60,8 @@ const itemFields = {
   sku: true,
   price: true,
   taxRate: true,
+  taxMode: true,
+  taxTreatment: true,
   photoUrl: true,
   temperature: true,
   isVegetarian: true,

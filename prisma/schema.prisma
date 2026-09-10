@@ -217,6 +217,16 @@ enum TaxMode {
   EXCLUSIVE
 }
 
+// How a supply is treated for VAT. STANDARD is taxed at a rate (per TaxMode);
+// ZERO_RATED is a taxable supply charged at 0%; EXEMPT is outside VAT
+// altogether. A menu item inherits the tenant's default (BusinessProfile)
+// unless it sets its own.
+enum TaxTreatment {
+  STANDARD
+  ZERO_RATED
+  EXEMPT
+}
+
 model Tenant {
   id        String   @id @default(cuid())
   name      String
@@ -1380,7 +1390,11 @@ model MenuItem {
   description    String?
   photoUrl       String?
   price          Decimal          @db.Decimal(12, 2)
+  // Per-item tax override. All null = inherit the tenant's BusinessProfile
+  // default (rate + mode + treatment). Any set value wins for that facet.
   taxRate        Decimal?         @db.Decimal(5, 2)
+  taxMode        TaxMode?
+  taxTreatment   TaxTreatment?
   temperature    DrinkTemperature @default(OTHER)
   isVegetarian   Boolean          @default(false)
   // Two separate concepts: isActive = in the menu at all; isAvailable =
@@ -1561,6 +1575,13 @@ model PosOrderItem {
   serviceId  String?
   quantity   Int                 @default(1)
   unitPrice  Decimal             @db.Decimal(12, 2)
+  // Tax as resolved at the moment of sale — item override else the tenant
+  // default. Snapshotted so a later change to either never re-taxes a
+  // historical order. Null on pre-existing rows: callers fall back to the
+  // current BusinessProfile.
+  taxRate      Decimal?          @db.Decimal(5, 2)
+  taxMode      TaxMode?
+  taxTreatment TaxTreatment?
   createdAt  DateTime            @default(now())
   order      PosOrder            @relation(fields: [orderId], references: [id], onDelete: Cascade)
   menuItem   MenuItem?           @relation(fields: [menuItemId], references: [id], onDelete: Restrict)
@@ -1904,8 +1925,12 @@ model BusinessProfile {
   registrationNumber String?
   kraPin             String?
 
-  taxRate Decimal? @db.Decimal(5, 2)
-  taxMode TaxMode  @default(INCLUSIVE)
+  // The tenant-wide default a menu item uses when it doesn't set its own.
+  // taxRate is the standard rate (0-100); taxMode says whether menu prices
+  // already include it; taxTreatment picks Standard / Zero-rated / Exempt.
+  taxRate      Decimal      @default(16) @db.Decimal(5, 2)
+  taxMode      TaxMode      @default(INCLUSIVE)
+  taxTreatment TaxTreatment @default(STANDARD)
 
   primaryPhone     String?
   alternativePhone String?
