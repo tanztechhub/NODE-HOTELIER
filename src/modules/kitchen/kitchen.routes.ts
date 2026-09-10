@@ -11,6 +11,7 @@ const orderInclude = {
   table: true,
   items: { include: {
     menuItem: { include: { category: true, product: true, recipe: { include: { ingredients: { include: { product: true } } } } } },
+    variant: { select: { name: true } },
     addons: { include: { addon: true } },
   } },
 } as const;

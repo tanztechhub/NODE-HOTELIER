@@ -26,8 +26,135 @@ const settingsSchema = z.object({
 // stamps the checked-in stay onto the order so settlement can default to
 // charging the folio, but it does NOT charge the folio now (a tab isn't
 // paid until the guest is done, and they may still settle in cash).
-const orderSchema = z.object({ tableId: z.string().cuid().optional(), locationId: z.string().cuid().optional(), customerId: z.string().trim().min(1).optional(), reservationId: z.string().trim().min(1).optional(), notes: z.string().trim().max(500).optional(), discount: z.coerce.number().min(0).default(0), items: z.array(z.object({ menuItemId: z.string().cuid(), quantity: z.coerce.number().int().min(1).max(50), addons: z.array(z.object({ addonId: z.string().cuid(), quantity: z.coerce.number().int().min(1).max(20).default(1) })).default([]) })).min(1) });
-const addItemsSchema = z.object({ items: z.array(z.object({ menuItemId: z.string().cuid(), quantity: z.coerce.number().int().min(1).max(50), addons: z.array(z.object({ addonId: z.string().cuid(), quantity: z.coerce.number().int().min(1).max(20).default(1) })).default([]) })).min(1) });
+// A single line the cashier is ringing up: a menu item, optionally a specific
+// variant (size/option), and any chosen add-ons. Variant choice and add-on
+// group rules are validated against the live menu in resolveMenuLines().
+const orderLineSchema = z.object({
+  menuItemId: z.string().cuid(),
+  variantId: z.string().cuid().optional(),
+  quantity: z.coerce.number().int().min(1).max(50),
+  addons: z.array(z.object({ addonId: z.string().cuid(), quantity: z.coerce.number().int().min(1).max(20).default(1) })).default([]),
+});
+const orderSchema = z.object({ tableId: z.string().cuid().optional(), locationId: z.string().cuid().optional(), customerId: z.string().trim().min(1).optional(), reservationId: z.string().trim().min(1).optional(), notes: z.string().trim().max(500).optional(), discount: z.coerce.number().min(0).default(0), items: z.array(orderLineSchema).min(1) });
+const addItemsSchema = z.object({ items: z.array(orderLineSchema).min(1) });
+
+type OrderLineInput = z.infer<typeof orderLineSchema>;
+
+// Everything resolveMenuLines needs to price a line and enforce the menu's
+// rules: active variants, the add-on groups attached to the item (with their
+// members and SINGLE/MULTIPLE + min/max/required rules), the legacy flat
+// add-on M2M as a fallback for items not yet migrated to groups, and the
+// product/recipe used later for stock deduction.
+const menuLineInclude = {
+  variants: { where: { isActive: true } },
+  addons: { select: { id: true, price: true } },
+  addonGroupLinks: {
+    where: { isActive: true, addonGroup: { isActive: true } },
+    orderBy: { sortOrder: "asc" },
+    include: {
+      addonGroup: {
+        include: {
+          items: {
+            where: { isActive: true, addon: { isActive: true } },
+            include: { addon: { select: { id: true, name: true, price: true } } },
+          },
+        },
+      },
+    },
+  },
+  product: true,
+  recipe: { include: { ingredients: { include: { product: true } } } },
+} satisfies Prisma.MenuItemInclude;
+
+type ResolvedLine = {
+  menuItemId: string;
+  variantId: string | undefined;
+  quantity: number;
+  unitPrice: Prisma.Decimal;
+  addons: { addonId: string; quantity: number; unitPrice: Prisma.Decimal }[];
+};
+
+/** Validates a set of POS order lines against the current menu — item
+ * availability, variant choice (required once an item has variants), add-on
+ * membership, and every attached add-on group's SINGLE/MULTIPLE + min/max/
+ * required rules — and returns each line with its resolved prices, plus the
+ * menu items (with product/recipe) for downstream stock maths. Throws
+ * { status: 400 } on the first rule violation. */
+async function resolveMenuLines(tid: string, lines: OrderLineInput[]) {
+  const menuItemIds = [...new Set(lines.map((line) => line.menuItemId))];
+  const menuItems = await prisma.menuItem.findMany({
+    where: { id: { in: menuItemIds }, tenantId: tid, isAvailable: true },
+    include: menuLineInclude,
+  });
+  const byId = new Map(menuItems.map((item) => [item.id, item]));
+  if (byId.size !== menuItemIds.length) {
+    throw Object.assign(new Error("Every order item must be an available menu item from this café"), { status: 400 });
+  }
+
+  const resolved: ResolvedLine[] = lines.map((line) => {
+    const item = byId.get(line.menuItemId)!;
+
+    // Variant — mandatory once the item defines any, and it must be one of
+    // this item's own active variants. Its price replaces the base price.
+    let variantId: string | undefined;
+    let unitPrice = item.price;
+    if (line.variantId) {
+      const variant = item.variants.find((v) => v.id === line.variantId);
+      if (!variant) throw Object.assign(new Error(`Choose a valid option for ${item.name}`), { status: 400 });
+      variantId = variant.id;
+      unitPrice = variant.price;
+    } else if (item.variants.length > 0) {
+      throw Object.assign(new Error(`Choose an option for ${item.name}`), { status: 400 });
+    }
+
+    const groups = item.addonGroupLinks.map((link) => link.addonGroup);
+    const priceByAddon = new Map<string, Prisma.Decimal>();
+    for (const addon of item.addons) priceByAddon.set(addon.id, addon.price);
+    for (const group of groups) for (const gi of group.items) priceByAddon.set(gi.addonId, gi.addon.price);
+
+    // Membership: an add-on must belong to one of the item's groups, or —
+    // for an item still on the legacy flat M2M with no groups — be directly
+    // linked to it.
+    const groupAddonIds = new Set<string>();
+    for (const group of groups) for (const gi of group.items) groupAddonIds.add(gi.addonId);
+    const legacyAddonIds = new Set(item.addons.map((addon) => addon.id));
+    for (const sel of line.addons) {
+      const ok = groupAddonIds.has(sel.addonId) || (groups.length === 0 && legacyAddonIds.has(sel.addonId));
+      if (!ok) throw Object.assign(new Error(`That add-on isn't offered for ${item.name}`), { status: 400 });
+    }
+
+    // Per-group counts against min/max/required. SINGLE caps effective max at 1.
+    for (const group of groups) {
+      const ids = new Set(group.items.map((gi) => gi.addonId));
+      const count = line.addons.filter((sel) => ids.has(sel.addonId)).reduce((n, sel) => n + sel.quantity, 0);
+      const effMax = group.selectionType === "SINGLE" ? 1 : group.maxSelections;
+      const effMin = Math.max(group.minSelections, group.required ? 1 : 0);
+      if (effMax > 0 && count > effMax) throw Object.assign(new Error(`Choose at most ${effMax} from "${group.name}" for ${item.name}`), { status: 400 });
+      if (count < effMin) throw Object.assign(new Error(`Choose at least ${effMin} from "${group.name}" for ${item.name}`), { status: 400 });
+    }
+
+    return {
+      menuItemId: line.menuItemId,
+      variantId,
+      quantity: line.quantity,
+      unitPrice,
+      addons: line.addons.map((sel) => ({ addonId: sel.addonId, quantity: sel.quantity, unitPrice: priceByAddon.get(sel.addonId)! })),
+    };
+  });
+
+  return { lines: resolved, menuItemsById: byId };
+}
+
+/** Turns resolved lines into a Prisma `items.create` payload. */
+function lineCreatePayload(lines: ResolvedLine[]): Prisma.PosOrderItemCreateWithoutOrderInput[] {
+  return lines.map((line) => ({
+    menuItemId: line.menuItemId,
+    variantId: line.variantId,
+    quantity: line.quantity,
+    unitPrice: line.unitPrice,
+    addons: { create: line.addons.map((addon) => ({ addonId: addon.addonId, quantity: addon.quantity, unitPrice: addon.unitPrice })) },
+  }));
+}
 
 // Bill-to-room is decided at settlement, not order creation — a tab isn't
 // paid until the customer is done, and they may not know or may change
@@ -73,6 +200,7 @@ function tenantIdFor(request: { tenantId?: string }): string {
 const orderInclude = {
   items: { include: {
     menuItem: { include: { product: true, recipe: { include: { ingredients: { include: { product: true } } } } } },
+    variant: { select: { id: true, name: true } },
     product: { select: { id: true, name: true, unit: true } },
     service: { select: { id: true, name: true, unit: { select: { name: true } } } },
     addons: { include: { addon: true } },
@@ -187,12 +315,13 @@ posRouter.post("/orders", async (req, res) => {
   const parsed = orderSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Invalid order", details: parsed.error.flatten() }); return; }
   const tid = tenantIdFor(req);
-  const menuItemIds = parsed.data.items.map((item) => item.menuItemId);
-  const addonIds = parsed.data.items.flatMap((item) => item.addons.map((addon) => addon.addonId));
-  const menuItems = await prisma.menuItem.findMany({ where: { id: { in: menuItemIds }, tenantId: tid, isAvailable: true } });
-  if (menuItems.length !== new Set(menuItemIds).size) { res.status(400).json({ error: "Every order item must be an available menu item from this café" }); return; }
-  const addons = addonIds.length ? await prisma.addon.findMany({ where: { id: { in: addonIds }, tenantId: tid, isActive: true } }) : [];
-  if (addons.length !== new Set(addonIds).size) { res.status(400).json({ error: "Every add-on must be an active add-on from this café" }); return; }
+  let resolvedLines: ResolvedLine[];
+  try {
+    ({ lines: resolvedLines } = await resolveMenuLines(tid, parsed.data.items));
+  } catch (error) {
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
+    throw error;
+  }
   if (parsed.data.tableId) {
     const table = await prisma.table.findFirst({ where: { id: parsed.data.tableId, tenantId: tid, isActive: true } });
     if (!table) { res.status(400).json({ error: "Choose an active table from this property" }); return; }
@@ -229,8 +358,6 @@ posRouter.post("/orders", async (req, res) => {
     throw error;
   }
 
-  const prices = new Map(menuItems.map((item) => [item.id, item.price]));
-  const addonPrices = new Map(addons.map((addon) => [addon.id, addon.price]));
   const tax = await taxSettingsFor(tid);
   try {
     const order = await prisma.$transaction(async (tx) => {
@@ -247,7 +374,7 @@ posRouter.post("/orders", async (req, res) => {
           discount: parsed.data.discount,
           status: instantServe ? "SERVED" : "OPEN",
           servedAt: instantServe ? new Date() : undefined,
-          items: { create: parsed.data.items.map((item) => ({ menuItemId: item.menuItemId, quantity: item.quantity, unitPrice: prices.get(item.menuItemId)!, addons: { create: item.addons.map((addon) => ({ addonId: addon.addonId, quantity: addon.quantity, unitPrice: addonPrices.get(addon.addonId)! })) } })) },
+          items: { create: lineCreatePayload(resolvedLines) },
         },
         include: orderInclude,
       });
@@ -281,39 +408,39 @@ posRouter.post("/orders/:id/items", async (req, res) => {
   if (order.channel !== "FOOD") { res.status(409).json({ error: "Only food/bar orders can have items added after the fact" }); return; }
   if (["COMPLETED", "CANCELLED"].includes(order.status)) { res.status(409).json({ error: "This order is already finalized — start a new one instead" }); return; }
 
-  const menuItemIds = parsed.data.items.map((item) => item.menuItemId);
-  const addonIds = parsed.data.items.flatMap((item) => item.addons.map((addon) => addon.addonId));
-  const menuItems = await prisma.menuItem.findMany({ where: { id: { in: menuItemIds }, tenantId: tid, isAvailable: true }, include: { product: true, recipe: { include: { ingredients: { include: { product: true } } } } } });
-  if (menuItems.length !== new Set(menuItemIds).size) { res.status(400).json({ error: "Every item must be an available menu item from this café" }); return; }
-  const addons = addonIds.length ? await prisma.addon.findMany({ where: { id: { in: addonIds }, tenantId: tid, isActive: true } }) : [];
-  if (addons.length !== new Set(addonIds).size) { res.status(400).json({ error: "Every add-on must be an active add-on from this café" }); return; }
-
-  const prices = new Map(menuItems.map((item) => [item.id, item.price]));
-  const addonPrices = new Map(addons.map((addon) => [addon.id, addon.price]));
+  let resolvedLines: ResolvedLine[];
+  let menuItemsById: Awaited<ReturnType<typeof resolveMenuLines>>["menuItemsById"];
+  try {
+    ({ lines: resolvedLines, menuItemsById } = await resolveMenuLines(tid, parsed.data.items));
+  } catch (error) {
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
+    throw error;
+  }
   const tax = await taxSettingsFor(tid);
 
-  // Same menu item with the same set of add-ons is the *same line* — bump
-  // its quantity instead of stacking a duplicate row on the bill/receipt.
-  // A different add-on selection is a genuinely different line and stays
-  // separate.
-  const addonKey = (list: { addonId: string }[]) => list.map((a) => a.addonId).sort().join("|");
+  // Same menu item, same variant, same set of add-ons is the *same line* —
+  // bump its quantity instead of stacking a duplicate row on the bill. A
+  // different variant or add-on selection stays a separate line.
+  const lineKey = (variantId: string | null | undefined, addons: { addonId: string }[]) =>
+    `${variantId ?? ""}::${addons.map((a) => a.addonId).sort().join("|")}`;
 
   try {
     const updated = await prisma.$transaction(async (tx) => {
-      for (const item of parsed.data.items) {
-        const key = addonKey(item.addons);
-        const existing = order.items.find((line) => line.menuItemId === item.menuItemId && addonKey(line.addons) === key);
+      for (const line of resolvedLines) {
+        const key = lineKey(line.variantId, line.addons);
+        const existing = order.items.find((row) => row.menuItemId === line.menuItemId && lineKey(row.variantId, row.addons) === key);
         if (existing) {
-          await tx.posOrderItem.update({ where: { id: existing.id }, data: { quantity: { increment: item.quantity } } });
+          await tx.posOrderItem.update({ where: { id: existing.id }, data: { quantity: { increment: line.quantity } } });
           continue;
         }
         await tx.posOrderItem.create({
           data: {
             orderId: order.id,
-            menuItemId: item.menuItemId,
-            quantity: item.quantity,
-            unitPrice: prices.get(item.menuItemId)!,
-            addons: { create: item.addons.map((addon) => ({ addonId: addon.addonId, quantity: addon.quantity, unitPrice: addonPrices.get(addon.addonId)! })) },
+            menuItemId: line.menuItemId,
+            variantId: line.variantId,
+            quantity: line.quantity,
+            unitPrice: line.unitPrice,
+            addons: { create: line.addons.map((addon) => ({ addonId: addon.addonId, quantity: addon.quantity, unitPrice: addon.unitPrice })) },
           },
         });
       }
@@ -322,7 +449,7 @@ posRouter.post("/orders/:id/items", async (req, res) => {
         if (!stockLocationId) throw Object.assign(new Error("No location is configured to hold stock for this order"), { status: 400 });
         // Only the newly added items need deducting — the rest were already
         // committed when the order was first served.
-        const newItems = parsed.data.items.map((item) => ({ quantity: item.quantity, menuItem: menuItems.find((m) => m.id === item.menuItemId)! }));
+        const newItems = resolvedLines.map((line) => ({ quantity: line.quantity, menuItem: menuItemsById.get(line.menuItemId)! }));
         await deductStockForOrder(tx, tid, computeStockRequirements(newItems), stockLocationId, order.orderNumber, req);
       }
       return tx.posOrder.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
@@ -571,12 +698,52 @@ posRouter.get("/menu-items", async (req, res) => {
 
   const rows = await prisma.menuItem.findMany({
     where,
-    include: { menuCategory: true, product: true, addons: true, locations: { select: { id: true, name: true } }, recipe: { include: { ingredients: { include: { product: true } } } } },
+    include: {
+      menuCategory: true,
+      product: true,
+      addons: true,
+      locations: { select: { id: true, name: true } },
+      recipe: { include: { ingredients: { include: { product: true } } } },
+      variants: { where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }], select: { id: true, name: true, price: true, sku: true } },
+      addonGroupLinks: {
+        where: { isActive: true, addonGroup: { isActive: true } },
+        orderBy: { sortOrder: "asc" },
+        select: {
+          addonGroup: {
+            select: {
+              id: true, name: true, description: true, selectionType: true,
+              minSelections: true, maxSelections: true, required: true,
+              items: {
+                where: { isActive: true, addon: { isActive: true } },
+                orderBy: [{ sortOrder: "asc" }, { addon: { name: "asc" } }],
+                select: { addon: { select: { id: true, name: true, description: true, price: true, imageUrl: true } } },
+              },
+            },
+          },
+        },
+      },
+    },
     orderBy: [{ menuCategory: { sortOrder: "asc" } }, { sortOrder: "asc" }, { name: "asc" }],
   });
   // The client still reads `.category` — keep that shape, sourced from the
-  // menu's own category table now.
-  const items = rows.map(({ menuCategory, ...item }) => ({ ...item, category: menuCategory }));
+  // menu's own category table now. `addonGroups` is the structured add-on
+  // model (groups + their SINGLE/MULTIPLE + min/max/required rules);
+  // `addons` stays the legacy flat list, used only for items not yet moved
+  // onto groups (matches resolveMenuLines' fallback).
+  const items = rows.map(({ menuCategory, addonGroupLinks, ...item }) => ({
+    ...item,
+    category: menuCategory,
+    addonGroups: addonGroupLinks.map((link) => ({
+      id: link.addonGroup.id,
+      name: link.addonGroup.name,
+      description: link.addonGroup.description,
+      selectionType: link.addonGroup.selectionType,
+      minSelections: link.addonGroup.minSelections,
+      maxSelections: link.addonGroup.maxSelections,
+      required: link.addonGroup.required,
+      addons: link.addonGroup.items.map((gi) => gi.addon),
+    })),
+  }));
   res.status(200).json({ items });
 });
 

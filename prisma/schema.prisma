@@ -1425,6 +1425,7 @@ model MenuItemVariant {
   updatedAt  DateTime @updatedAt
   tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  orderItems PosOrderItem[]
 
   @@unique([tenantId, menuItemId, name])
   @@unique([tenantId, sku])
@@ -1551,6 +1552,11 @@ model PosOrderItem {
   id         String              @id @default(cuid())
   orderId    String
   menuItemId String?
+  // The specific size/option chosen for this line, when the menu item has
+  // variants (Pizza: Large). Null = base item, no variants. unitPrice is
+  // always the price actually charged — the variant's when set, else the
+  // item's base price.
+  variantId  String?
   productId  String?
   serviceId  String?
   quantity   Int                 @default(1)
@@ -1558,11 +1564,13 @@ model PosOrderItem {
   createdAt  DateTime            @default(now())
   order      PosOrder            @relation(fields: [orderId], references: [id], onDelete: Cascade)
   menuItem   MenuItem?           @relation(fields: [menuItemId], references: [id], onDelete: Restrict)
+  variant    MenuItemVariant?    @relation(fields: [variantId], references: [id], onDelete: Restrict)
   product    Product?            @relation(fields: [productId], references: [id], onDelete: Restrict)
   service    Service?            @relation(fields: [serviceId], references: [id], onDelete: Restrict)
   addons     PosOrderItemAddon[]
 
   @@index([orderId])
+  @@index([variantId])
 }
 
 // A reusable add-on (Cheddar, Bacon, Extra Espresso). Independent of any one
