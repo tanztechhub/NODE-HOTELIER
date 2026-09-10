@@ -29,7 +29,18 @@ const itemUpdateSchema = partialNoDefaults(itemSchema);
 const addonUpdateSchema = partialNoDefaults(addonSchema);
 const tenantId = (req: { tenantId?: string }) => { if (!req.tenantId) throw new Error("Tenant context is required"); return req.tenantId; };
 
-const itemInclude = { category: true, product: true, addons: true, locations: { select: { id: true, name: true } }, recipe: { include: { ingredients: { include: { product: true } } } } } as const;
+// This screen still picks from the generic Category tree; the real link is
+// MenuCategory now, so mirror the chosen category into one (find-or-create
+// by name) and connect that too. The new Menu ▸ Categories screen is the
+// place to actually curate them.
+async function menuCategoryIdFor(tid: string, categoryName: string): Promise<string> {
+  const existing = await prisma.menuCategory.findFirst({ where: { tenantId: tid, name: categoryName }, select: { id: true } });
+  if (existing) return existing.id;
+  const created = await prisma.menuCategory.create({ data: { tenantId: tid, name: categoryName }, select: { id: true } });
+  return created.id;
+}
+
+const itemInclude = { category: true, menuCategory: true, product: true, addons: true, locations: { select: { id: true, name: true } }, recipe: { include: { ingredients: { include: { product: true } } } } } as const;
 
 menuRouter.get("/items", async (req, res) => res.json({ items: await prisma.menuItem.findMany({ where: { tenantId: tenantId(req) }, include: itemInclude, orderBy: { name: "asc" } }) }));
 menuRouter.post("/items", async (req, res) => {
@@ -49,8 +60,9 @@ menuRouter.post("/items", async (req, res) => {
     if (count !== new Set(data.data.locationIds).size) { res.status(400).json({ error: "Every location must belong to this property" }); return; }
   }
   const { categoryId, productId, recipeId, addonIds, locationIds, ...item } = data.data;
+  const menuCategoryId = await menuCategoryIdFor(tid, category.name);
   res.status(201).json({ item: await prisma.menuItem.create({
-    data: { ...item, tenant: { connect: { id: tid } }, category: { connect: { id: categoryId } }, ...(productId ? { product: { connect: { id: productId } } } : {}), ...(recipeId ? { recipe: { connect: { id: recipeId } } } : {}), addons: { connect: addonIds.map((id) => ({ id })) }, locations: { connect: locationIds.map((id) => ({ id })) } },
+    data: { ...item, tenant: { connect: { id: tid } }, category: { connect: { id: categoryId } }, menuCategory: { connect: { id: menuCategoryId } }, ...(productId ? { product: { connect: { id: productId } } } : {}), ...(recipeId ? { recipe: { connect: { id: recipeId } } } : {}), addons: { connect: addonIds.map((id) => ({ id })) }, locations: { connect: locationIds.map((id) => ({ id })) } },
     include: itemInclude,
   }) });
 });
@@ -60,7 +72,10 @@ menuRouter.patch("/items/:id", async (req, res) => {
   const tid = tenantId(req);
   const existing = await prisma.menuItem.findFirst({ where: { id: req.params.id, tenantId: tid } });
   if (!existing) { res.status(404).json({ error: "Menu item not found" }); return; }
-  if (data.data.categoryId && !(await prisma.category.findFirst({ where: { id: data.data.categoryId, tenantId: tid, scope: "RESTAURANT" } }))) { res.status(400).json({ error: "Choose a menu category from this property" }); return; }
+  const newCategory = data.data.categoryId
+    ? await prisma.category.findFirst({ where: { id: data.data.categoryId, tenantId: tid, scope: "RESTAURANT" } })
+    : null;
+  if (data.data.categoryId && !newCategory) { res.status(400).json({ error: "Choose a menu category from this property" }); return; }
   if (data.data.addonIds) {
     const count = await prisma.addon.count({ where: { id: { in: data.data.addonIds }, tenantId: tid } });
     if (count !== new Set(data.data.addonIds).size) { res.status(400).json({ error: "Every add-on must belong to this property" }); return; }
@@ -70,11 +85,13 @@ menuRouter.patch("/items/:id", async (req, res) => {
     if (count !== new Set(data.data.locationIds).size) { res.status(400).json({ error: "Every location must belong to this property" }); return; }
   }
   const { categoryId, productId, recipeId, addonIds, locationIds, ...item } = data.data;
+  const menuCategoryId = newCategory ? await menuCategoryIdFor(tid, newCategory.name) : null;
   const updated = await prisma.menuItem.update({
     where: { id: existing.id },
     data: {
       ...item,
       ...(categoryId ? { category: { connect: { id: categoryId } } } : {}),
+      ...(menuCategoryId ? { menuCategory: { connect: { id: menuCategoryId } } } : {}),
       ...(productId === null ? { product: { disconnect: true } } : productId ? { product: { connect: { id: productId } } } : {}),
       ...(recipeId === null ? { recipe: { disconnect: true } } : recipeId ? { recipe: { connect: { id: recipeId } } } : {}),
       ...(addonIds ? { addons: { set: addonIds.map((id) => ({ id })) } } : {}),

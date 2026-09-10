@@ -41,13 +41,15 @@ kitchenRouter.patch("/orders/:id/ready", async (req, res) => {
 /** Product-backed menu and recipe snapshot used by the kitchen side panel. */
 kitchenRouter.get("/menu-items", async (req, res) => {
   const productWithStock = { include: { stocks: { select: { quantity: true } } } } as const;
-  const items = await prisma.menuItem.findMany({ where: { tenantId: tenantId(req), isAvailable: true }, include: { category: true, product: productWithStock, recipe: { include: { ingredients: { include: { product: productWithStock } } } } }, orderBy: [{ category: { name: "asc" } }, { name: "asc" }] });
+  const rows = await prisma.menuItem.findMany({ where: { tenantId: tenantId(req), isAvailable: true }, include: { menuCategory: true, product: productWithStock, recipe: { include: { ingredients: { include: { product: productWithStock } } } } }, orderBy: [{ menuCategory: { sortOrder: "asc" } }, { sortOrder: "asc" }, { name: "asc" }] });
+  const items = rows.map(({ menuCategory, ...item }) => ({ ...item, category: menuCategory }));
   res.json({ items });
 });
 
 kitchenRouter.get("/drink-offerings", async (req, res) => {
   const productStockFields = { id: true, name: true, unit: true, stocks: { select: { quantity: true } } } as const;
-  const drinks = await prisma.menuItem.findMany({ where: { tenantId: tenantId(req), isAvailable: true }, select: { id: true, name: true, description: true, temperature: true, category: { select: { name: true } }, product: { select: productStockFields }, recipe: { include: { ingredients: { include: { product: { select: productStockFields } } } } } }, orderBy: [{ temperature: "asc" }, { name: "asc" }] });
+  const rows = await prisma.menuItem.findMany({ where: { tenantId: tenantId(req), isAvailable: true }, select: { id: true, name: true, description: true, temperature: true, menuCategory: { select: { name: true } }, product: { select: productStockFields }, recipe: { include: { ingredients: { include: { product: { select: productStockFields } } } } } }, orderBy: [{ temperature: "asc" }, { name: "asc" }] });
+  const drinks = rows.map(({ menuCategory, ...d }) => ({ ...d, category: menuCategory }));
   const offerings = { hot: drinks.filter((drink) => drink.temperature === "HOT"), cold: drinks.filter((drink) => drink.temperature === "COLD"), other: drinks.filter((drink) => drink.temperature === "OTHER") };
   res.json({ offerings, summary: { hot: offerings.hot.length, cold: offerings.cold.length, other: offerings.other.length } });
 });

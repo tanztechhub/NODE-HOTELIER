@@ -1361,33 +1361,44 @@ model MenuCategory {
 }
 
 model MenuItem {
-  id           String           @id @default(cuid())
-  tenantId     String
-  categoryId   String
-  menuCategoryId String?
-  productId    String?
-  recipeId     String?
-  name         String
-  description  String?
-  photoUrl     String?
-  price        Decimal          @db.Decimal(12, 2)
-  temperature  DrinkTemperature @default(OTHER)
-  isVegetarian Boolean          @default(false)
-  isAvailable  Boolean          @default(true)
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
-  tenant       Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  category     Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  menuCategory MenuCategory?    @relation(fields: [menuCategoryId], references: [id], onDelete: Restrict)
-  product      Product?         @relation(fields: [productId], references: [id], onDelete: SetNull)
-  recipe       Recipe?          @relation(fields: [recipeId], references: [id], onDelete: SetNull)
-  orderItems   PosOrderItem[]
-  addons       Addon[]
+  id             String           @id @default(cuid())
+  tenantId       String
+  // Legacy link to the generic Category tree — nullable now, kept only so
+  // the old Menu & Add-ons screen keeps working. menuCategoryId is the real
+  // one going forward.
+  categoryId     String?
+  menuCategoryId String
+  productId      String?
+  recipeId       String?
+  name           String
+  shortName      String?
+  sku            String?
+  description    String?
+  photoUrl       String?
+  price          Decimal          @db.Decimal(12, 2)
+  taxRate        Decimal?         @db.Decimal(5, 2)
+  temperature    DrinkTemperature @default(OTHER)
+  isVegetarian   Boolean          @default(false)
+  // Two separate concepts: isActive = in the menu at all; isAvailable =
+  // currently sellable (e.g. temporarily sold out).
+  isActive       Boolean          @default(true)
+  isAvailable    Boolean          @default(true)
+  sortOrder      Int              @default(0)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  tenant         Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category       Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  menuCategory   MenuCategory     @relation(fields: [menuCategoryId], references: [id], onDelete: Restrict)
+  product        Product?         @relation(fields: [productId], references: [id], onDelete: SetNull)
+  recipe         Recipe?          @relation(fields: [recipeId], references: [id], onDelete: SetNull)
+  orderItems     PosOrderItem[]
+  addons         Addon[]
   // Empty = unallocated = sellable at every location (the default).
-  locations    Location[]
+  locations      Location[]
 
+  @@unique([tenantId, sku])
   @@index([tenantId, categoryId])
-  @@index([tenantId, menuCategoryId])
+  @@index([tenantId, menuCategoryId, sortOrder])
   @@index([tenantId, recipeId])
 }
 

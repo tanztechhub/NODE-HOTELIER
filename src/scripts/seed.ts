@@ -144,9 +144,16 @@ const menu = [
   { category: "Bakery", name: "Chocolate Cake Slice", description: "Dark chocolate cake with ganache", price: 400, temperature: "OTHER" },
 ] as const;
 
-for (const categoryName of ["Hot drinks", "Cold drinks", "Bakery"]) {
+const menuCategoryIds = new Map<string, string>();
+for (const [index, categoryName] of ["Hot drinks", "Cold drinks", "Bakery"].entries()) {
   const existing = await prisma.category.findFirst({ where: { tenantId: tenant.id, scope: "RESTAURANT", parentId: null, name: categoryName } });
   if (!existing) await prisma.category.create({ data: { tenantId: tenant.id, scope: "RESTAURANT", name: categoryName } });
+  const mc = await prisma.menuCategory.upsert({
+    where: { tenantId_name: { tenantId: tenant.id, name: categoryName } },
+    update: { sortOrder: index },
+    create: { tenantId: tenant.id, name: categoryName, sortOrder: index },
+  });
+  menuCategoryIds.set(categoryName, mc.id);
 }
 
 for (const entry of menu) {
@@ -154,7 +161,7 @@ for (const entry of menu) {
     where: { tenantId: tenant.id, scope: "RESTAURANT", parentId: null, name: entry.category },
   });
   const existing = await prisma.menuItem.findFirst({ where: { tenantId: tenant.id, name: entry.name } });
-  const data = { categoryId: category.id, description: entry.description, price: entry.price, temperature: entry.temperature, isAvailable: true };
+  const data = { categoryId: category.id, menuCategoryId: menuCategoryIds.get(entry.category)!, description: entry.description, price: entry.price, temperature: entry.temperature, isAvailable: true };
   if (existing) await prisma.menuItem.update({ where: { id: existing.id }, data });
   else await prisma.menuItem.create({ data: { tenantId: tenant.id, name: entry.name, ...data } });
 }

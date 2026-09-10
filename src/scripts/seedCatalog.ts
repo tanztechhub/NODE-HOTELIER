@@ -201,29 +201,43 @@ const whiskeyTotRecipe = await upsertRecipe("Whiskey Tot", [{ productId: whiskey
 const vodkaTotRecipe = await upsertRecipe("Vodka Tot", [{ productId: vodka.id, quantity: 25 }]);
 
 // ---------- Bar menu items: one whole-unit, two single-ingredient tots, two multi-ingredient cocktails ----------
-async function upsertMenuItem(data: { categoryId: string; name: string; description?: string; price: number; productId?: string; recipeId?: string }) {
+const menuCategoryCache = new Map<string, string>();
+async function menuCategoryIdFor(name: string): Promise<string> {
+  const cached = menuCategoryCache.get(name);
+  if (cached) return cached;
+  const mc = await prisma.menuCategory.upsert({
+    where: { tenantId_name: { tenantId: tid, name } },
+    update: {},
+    create: { tenantId: tid, name },
+  });
+  menuCategoryCache.set(name, mc.id);
+  return mc.id;
+}
+async function upsertMenuItem(data: { category: { id: string; name: string }; name: string; description?: string; price: number; productId?: string; recipeId?: string }) {
+  const menuCategoryId = await menuCategoryIdFor(data.category.name);
+  const base = { categoryId: data.category.id, menuCategoryId, price: data.price, productId: data.productId ?? null, recipeId: data.recipeId ?? null };
   let item = await prisma.menuItem.findFirst({ where: { tenantId: tid, name: data.name } });
-  if (!item) item = await prisma.menuItem.create({ data: { tenantId: tid, categoryId: data.categoryId, name: data.name, description: data.description, price: data.price, productId: data.productId, recipeId: data.recipeId, temperature: "OTHER" } });
-  else item = await prisma.menuItem.update({ where: { id: item.id }, data: { categoryId: data.categoryId, price: data.price, productId: data.productId ?? null, recipeId: data.recipeId ?? null } });
+  if (!item) item = await prisma.menuItem.create({ data: { tenantId: tid, name: data.name, description: data.description, temperature: "OTHER", ...base } });
+  else item = await prisma.menuItem.update({ where: { id: item.id }, data: base });
   return item;
 }
 async function scopeMenuItem(id: string, locationIds: string[]) {
   await prisma.menuItem.update({ where: { id }, data: { locations: { set: locationIds.map((locationId) => ({ id: locationId })) } } });
 }
 
-const mojito = await upsertMenuItem({ categoryId: catCocktails.id, name: "Mojito", description: "White rum, soda, fresh lime, mint sugar syrup", price: 650, recipeId: mojitoRecipe.id });
+const mojito = await upsertMenuItem({ category: catCocktails, name: "Mojito", description: "White rum, soda, fresh lime, mint sugar syrup", price: 650, recipeId: mojitoRecipe.id });
 await scopeMenuItem(mojito.id, [mainBar.id, backyardBar.id, rooftopBar.id]);
 
-const ginTonic = await upsertMenuItem({ categoryId: catCocktails.id, name: "Gin & Tonic", description: "London dry gin over tonic and ice", price: 600, recipeId: ginTonicRecipe.id });
+const ginTonic = await upsertMenuItem({ category: catCocktails, name: "Gin & Tonic", description: "London dry gin over tonic and ice", price: 600, recipeId: ginTonicRecipe.id });
 await scopeMenuItem(ginTonic.id, [backyardBar.id]);
 
-const whiskeyTot = await upsertMenuItem({ categoryId: catSpirits.id, name: "Whiskey Tot (25ml)", price: 350, recipeId: whiskeyTotRecipe.id });
+const whiskeyTot = await upsertMenuItem({ category: catSpirits, name: "Whiskey Tot (25ml)", price: 350, recipeId: whiskeyTotRecipe.id });
 await scopeMenuItem(whiskeyTot.id, [mainBar.id]);
 
-const vodkaTot = await upsertMenuItem({ categoryId: catSpirits.id, name: "Vodka Tot (25ml)", price: 300, recipeId: vodkaTotRecipe.id });
+const vodkaTot = await upsertMenuItem({ category: catSpirits, name: "Vodka Tot (25ml)", price: 300, recipeId: vodkaTotRecipe.id });
 await scopeMenuItem(vodkaTot.id, [mainBar.id, rooftopBar.id]);
 
-const tuskerBottle = await upsertMenuItem({ categoryId: catBeer.id, name: "Tusker Lager (Bottle)", price: 250, productId: tuskerLager.id });
+const tuskerBottle = await upsertMenuItem({ category: catBeer, name: "Tusker Lager (Bottle)", price: 250, productId: tuskerLager.id });
 await scopeMenuItem(tuskerBottle.id, [mainBar.id, backyardBar.id, rooftopBar.id]);
 
 // ---------- Re-scope existing Restaurant-category menu items for variety ----------

@@ -569,11 +569,14 @@ posRouter.get("/menu-items", async (req, res) => {
     ...(locationCount > 0 ? { OR: [{ locations: { none: {} } }, ...(effectiveLocationId ? [{ locations: { some: { id: effectiveLocationId } } }] : [])] } : {}),
   };
 
-  const items = await prisma.menuItem.findMany({
+  const rows = await prisma.menuItem.findMany({
     where,
-    include: { category: true, product: true, addons: true, locations: { select: { id: true, name: true } }, recipe: { include: { ingredients: { include: { product: true } } } } },
-    orderBy: [{ category: { name: "asc" } }, { name: "asc" }],
+    include: { menuCategory: true, product: true, addons: true, locations: { select: { id: true, name: true } }, recipe: { include: { ingredients: { include: { product: true } } } } },
+    orderBy: [{ menuCategory: { sortOrder: "asc" } }, { sortOrder: "asc" }, { name: "asc" }],
   });
+  // The client still reads `.category` — keep that shape, sourced from the
+  // menu's own category table now.
+  const items = rows.map(({ menuCategory, ...item }) => ({ ...item, category: menuCategory }));
   res.status(200).json({ items });
 });
 
