@@ -254,6 +254,7 @@ model Tenant {
   menuItems          MenuItem[]
   menuCategories     MenuCategory[]
   menuItemVariants   MenuItemVariant[]
+  addonGroups        AddonGroup[]
   recipes            Recipe[]
   tables             Table[]
   payments           Payment[]
@@ -1587,6 +1588,34 @@ model PosOrderItemAddon {
   addon       Addon        @relation(fields: [addonId], references: [id], onDelete: Restrict)
 
   @@index([orderItemId])
+}
+
+enum AddonSelectionType {
+  SINGLE
+  MULTIPLE
+}
+
+// A reusable rule-set for choosing add-ons — "Choose Cheese" (pick exactly
+// one), "Extras" (pick up to five). Holds no add-ons itself; those attach
+// via AddonGroupItem (Phase 6). Groups attach to menu items via
+// MenuItemAddonGroup (Phase 7).
+model AddonGroup {
+  id            String             @id @default(cuid())
+  tenantId      String
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name          String
+  description   String?
+  selectionType AddonSelectionType @default(SINGLE)
+  minSelections Int                @default(0)
+  maxSelections Int                @default(1)
+  required      Boolean            @default(false)
+  isActive      Boolean            @default(true)
+  sortOrder     Int                @default(0)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@unique([tenantId, name])
+  @@index([tenantId, isActive, sortOrder])
 }
 
 // A recipe is how a chef makes a dish: ordered prep steps, an estimated

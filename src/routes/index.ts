@@ -28,6 +28,7 @@ import { stockLedgerRouter } from "../modules/stock-ledger/stock-ledger.routes.j
 import { menuRouter } from "../modules/menu/menu.routes.js";
 import { menuCategoriesRouter } from "../modules/menu-categories/menu-categories.routes.js";
 import { menuItemsRouter } from "../modules/menu-items/menu-items.routes.js";
+import { addonGroupsRouter } from "../modules/addon-groups/addon-groups.routes.js";
 import { employeesRouter } from "../modules/employees/employees.routes.js";
 import { departmentsRouter } from "../modules/departments/departments.routes.js";
 import { businessProfileRouter } from "../modules/business-profile/business-profile.routes.js";
@@ -70,6 +71,7 @@ router.use("/stock-ledger", stockLedgerRouter);
 router.use("/menu", menuRouter);
 router.use("/menu-categories", menuCategoriesRouter);
 router.use("/menu-items", menuItemsRouter);
+router.use("/addon-groups", addonGroupsRouter);
 router.use("/employees", employeesRouter);
 router.use("/departments", departmentsRouter);
 router.use("/business-profile", businessProfileRouter);
