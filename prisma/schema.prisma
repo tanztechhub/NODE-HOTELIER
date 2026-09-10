@@ -253,6 +253,7 @@ model Tenant {
   addons             Addon[]
   menuItems          MenuItem[]
   menuCategories     MenuCategory[]
+  menuItemVariants   MenuItemVariant[]
   recipes            Recipe[]
   tables             Table[]
   payments           Payment[]
@@ -1393,6 +1394,7 @@ model MenuItem {
   recipe         Recipe?          @relation(fields: [recipeId], references: [id], onDelete: SetNull)
   orderItems     PosOrderItem[]
   addons         Addon[]
+  variants       MenuItemVariant[]
   // Empty = unallocated = sellable at every location (the default).
   locations      Location[]
 
@@ -1400,6 +1402,29 @@ model MenuItem {
   @@index([tenantId, categoryId])
   @@index([tenantId, menuCategoryId, sortOrder])
   @@index([tenantId, recipeId])
+}
+
+// A sized/optioned version of a menu item with its own price — Pizza:
+// Small/Medium/Large, Cappuccino: Regular/Large. NOT an add-on. An item has
+// zero or many; with none, the item's base price is used, otherwise each
+// variant carries its own price.
+model MenuItemVariant {
+  id         String   @id @default(cuid())
+  tenantId   String
+  menuItemId String
+  name       String
+  sku        String?
+  price      Decimal  @db.Decimal(12, 2)
+  isActive   Boolean  @default(true)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, menuItemId, name])
+  @@unique([tenantId, sku])
+  @@index([tenantId, menuItemId, sortOrder])
 }
 
 model PosOrder {

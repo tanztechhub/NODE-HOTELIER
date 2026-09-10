@@ -60,8 +60,21 @@ const itemFields = {
   sortOrder: true,
   createdAt: true,
   updatedAt: true,
-  _count: { select: { orderItems: true } },
+  _count: { select: { orderItems: true, variants: true } },
 } as const;
+
+const variantFields = {
+  id: true,
+  menuItemId: true,
+  name: true,
+  sku: true,
+  price: true,
+  isActive: true,
+  sortOrder: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+const variantOrderBy: Prisma.MenuItemVariantOrderByWithRelationInput[] = [{ sortOrder: "asc" }, { name: "asc" }];
 
 const orderBy: Prisma.MenuItemOrderByWithRelationInput[] = [
   { menuCategory: { sortOrder: "asc" } },
@@ -175,8 +188,111 @@ menuItemsRouter.delete("/:id", async (req, res, next) => {
       res.status(409).json({ error: `This item is on ${existing._count.orderItems} order${existing._count.orderItems === 1 ? "" : "s"} — deactivate it instead` });
       return;
     }
-    // Also clears the row's add-on / location links (implicit M2M join rows).
+    // Also clears its variants, add-on and location links.
     await prisma.menuItem.delete({ where: { id: existing.id } });
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── Variants (Phase 3) ──────────────────────────────────────────────────
+// Sizes/options of a menu item with their own price. Zero or many per item;
+// with none, the item's base price applies. Not add-ons.
+
+const variantCreateSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  sku: optionalText(60),
+  price: z.coerce.number().min(0, "Price cannot be negative").max(9_999_999),
+  isActive: z.boolean().default(true),
+  sortOrder: z.coerce.number().int().min(0).max(99999).optional(),
+});
+const variantUpdateSchema = partialNoDefaults(variantCreateSchema);
+const variantReorderSchema = z.object({ orderedIds: z.array(z.string().trim().min(1)).min(1) });
+
+async function assertMenuItem(tid: string, menuItemId: string) {
+  const item = await prisma.menuItem.findFirst({ where: { id: menuItemId, tenantId: tid }, select: { id: true } });
+  if (!item) throw Object.assign(new Error("Menu item not found"), { status: 404 });
+}
+
+// P2002.meta.target isn't reliably populated on this Postgres setup, so
+// distinguish the SKU clash from the per-item name clash explicitly.
+async function assertVariantSkuFree(tid: string, sku: string | undefined, exceptVariantId?: string) {
+  if (!sku) return;
+  const clash = await prisma.menuItemVariant.findFirst({ where: { tenantId: tid, sku, ...(exceptVariantId ? { id: { not: exceptVariantId } } : {}) }, select: { id: true } });
+  if (clash) throw Object.assign(new Error("A variant with this SKU already exists"), { status: 409 });
+}
+
+menuItemsRouter.get("/:menuItemId/variants", async (req, res, next) => {
+  try {
+    const tid = tenantId(req);
+    await assertMenuItem(tid, req.params.menuItemId);
+    const variants = await prisma.menuItemVariant.findMany({ where: { tenantId: tid, menuItemId: req.params.menuItemId }, select: variantFields, orderBy: variantOrderBy });
+    res.json({ variants });
+  } catch (error) {
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
+    next(error);
+  }
+});
+
+menuItemsRouter.post("/:menuItemId/variants", async (req, res, next) => {
+  const data = variantCreateSchema.safeParse(req.body);
+  if (!data.success) { res.status(400).json({ error: "Invalid variant", details: data.error.flatten() }); return; }
+  const tid = tenantId(req);
+  try {
+    await assertMenuItem(tid, req.params.menuItemId);
+    await assertVariantSkuFree(tid, data.data.sku);
+    let { sortOrder } = data.data;
+    if (sortOrder === undefined) {
+      const last = await prisma.menuItemVariant.findFirst({ where: { tenantId: tid, menuItemId: req.params.menuItemId }, orderBy: { sortOrder: "desc" }, select: { sortOrder: true } });
+      sortOrder = (last?.sortOrder ?? -1) + 1;
+    }
+    const variant = await prisma.menuItemVariant.create({ data: { tenantId: tid, menuItemId: req.params.menuItemId, ...data.data, sortOrder }, select: variantFields });
+    res.status(201).json({ variant });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") { res.status(409).json({ error: "This item already has a variant with that name" }); return; }
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
+    next(error);
+  }
+});
+
+menuItemsRouter.patch("/:menuItemId/variants/:id", async (req, res, next) => {
+  const data = variantUpdateSchema.safeParse(req.body);
+  if (!data.success) { res.status(400).json({ error: "Invalid variant", details: data.error.flatten() }); return; }
+  const tid = tenantId(req);
+  try {
+    const exists = await prisma.menuItemVariant.findFirst({ where: { id: req.params.id, tenantId: tid, menuItemId: req.params.menuItemId }, select: { id: true } });
+    if (!exists) { res.status(404).json({ error: "Variant not found" }); return; }
+    await assertVariantSkuFree(tid, data.data.sku, req.params.id);
+    await prisma.menuItemVariant.update({ where: { id: req.params.id }, data: data.data });
+    const variant = await prisma.menuItemVariant.findUniqueOrThrow({ where: { id: req.params.id }, select: variantFields });
+    res.json({ variant });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") { res.status(409).json({ error: "This item already has a variant with that name" }); return; }
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
+    next(error);
+  }
+});
+
+menuItemsRouter.post("/:menuItemId/variants/reorder", async (req, res, next) => {
+  const data = variantReorderSchema.safeParse(req.body);
+  if (!data.success) { res.status(400).json({ error: "Invalid order", details: data.error.flatten() }); return; }
+  const tid = tenantId(req);
+  try {
+    const owned = await prisma.menuItemVariant.count({ where: { id: { in: data.data.orderedIds }, tenantId: tid, menuItemId: req.params.menuItemId } });
+    if (owned !== new Set(data.data.orderedIds).size) { res.status(400).json({ error: "Every variant must belong to this item" }); return; }
+    await prisma.$transaction(data.data.orderedIds.map((id, index) => prisma.menuItemVariant.update({ where: { id }, data: { sortOrder: index } })));
+    const variants = await prisma.menuItemVariant.findMany({ where: { tenantId: tid, menuItemId: req.params.menuItemId }, select: variantFields, orderBy: variantOrderBy });
+    res.json({ variants });
+  } catch (error) {
+    next(error);
+  }
+});
+
+menuItemsRouter.delete("/:menuItemId/variants/:id", async (req, res, next) => {
+  try {
+    const deleted = await prisma.menuItemVariant.deleteMany({ where: { id: req.params.id, tenantId: tenantId(req), menuItemId: req.params.menuItemId } });
+    if (!deleted.count) { res.status(404).json({ error: "Variant not found" }); return; }
     res.status(204).send();
   } catch (error) {
     next(error);
