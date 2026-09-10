@@ -59,8 +59,29 @@ const groupFields = {
   sortOrder: true,
   createdAt: true,
   updatedAt: true,
+  _count: { select: { items: true } },
 } as const;
 const orderBy: Prisma.AddonGroupOrderByWithRelationInput[] = [{ sortOrder: "asc" }, { name: "asc" }];
+
+// AddonGroupItem — the add-ons in a group (Phase 6).
+const groupItemFields = {
+  id: true,
+  addonGroupId: true,
+  addonId: true,
+  sortOrder: true,
+  isActive: true,
+  addon: { select: { id: true, name: true, price: true, sku: true, imageUrl: true, isActive: true } },
+} as const;
+const groupItemOrderBy: Prisma.AddonGroupItemOrderByWithRelationInput[] = [{ sortOrder: "asc" }, { addon: { name: "asc" } }];
+
+async function assertGroup(tid: string, addonGroupId: string) {
+  const g = await prisma.addonGroup.findFirst({ where: { id: addonGroupId, tenantId: tid }, select: { id: true } });
+  if (!g) throw Object.assign(new Error("Add-on group not found"), { status: 404 });
+}
+
+const addItemSchema = z.object({ addonId: z.string().trim().min(1), sortOrder: z.coerce.number().int().min(0).max(99999).optional() });
+const patchItemSchema = z.object({ isActive: z.boolean() });
+const itemReorderSchema = z.object({ orderedIds: z.array(z.string().trim().min(1)).min(1) });
 
 addonGroupsRouter.get("/", async (req, res, next) => {
   try {
@@ -152,9 +173,86 @@ addonGroupsRouter.delete("/:id", async (req, res, next) => {
   try {
     const existing = await prisma.addonGroup.findFirst({ where: { id: req.params.id, tenantId: tenantId(req) }, select: { id: true } });
     if (!existing) { res.status(404).json({ error: "Add-on group not found" }); return; }
-    // No references possible yet — links to add-ons (Phase 6) and menu items
-    // (Phase 7) will add safety checks here.
+    // Its add-on links (AddonGroupItem) cascade away — the add-ons survive.
+    // A menu-item attachment check is added in Phase 7.
     await prisma.addonGroup.delete({ where: { id: existing.id } });
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── Group ▸ Add-ons (Phase 6) ───────────────────────────────────────────
+
+addonGroupsRouter.get("/:groupId/items", async (req, res, next) => {
+  try {
+    const tid = tenantId(req);
+    await assertGroup(tid, req.params.groupId);
+    const items = await prisma.addonGroupItem.findMany({ where: { tenantId: tid, addonGroupId: req.params.groupId }, select: groupItemFields, orderBy: groupItemOrderBy });
+    res.json({ items });
+  } catch (error) {
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
+    next(error);
+  }
+});
+
+// Attach an EXISTING add-on to the group. Never creates an add-on.
+addonGroupsRouter.post("/:groupId/items", async (req, res, next) => {
+  const data = addItemSchema.safeParse(req.body);
+  if (!data.success) { res.status(400).json({ error: "Invalid request", details: data.error.flatten() }); return; }
+  const tid = tenantId(req);
+  try {
+    await assertGroup(tid, req.params.groupId);
+    const addon = await prisma.addon.findFirst({ where: { id: data.data.addonId, tenantId: tid }, select: { id: true } });
+    if (!addon) { res.status(400).json({ error: "Choose an add-on from this property" }); return; }
+    let { sortOrder } = data.data;
+    if (sortOrder === undefined) {
+      const last = await prisma.addonGroupItem.findFirst({ where: { tenantId: tid, addonGroupId: req.params.groupId }, orderBy: { sortOrder: "desc" }, select: { sortOrder: true } });
+      sortOrder = (last?.sortOrder ?? -1) + 1;
+    }
+    const item = await prisma.addonGroupItem.create({ data: { tenantId: tid, addonGroupId: req.params.groupId, addonId: data.data.addonId, sortOrder }, select: groupItemFields });
+    res.status(201).json({ item });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") { res.status(409).json({ error: "That add-on is already in this group" }); return; }
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
+    next(error);
+  }
+});
+
+addonGroupsRouter.patch("/:groupId/items/:id", async (req, res, next) => {
+  const data = patchItemSchema.safeParse(req.body);
+  if (!data.success) { res.status(400).json({ error: "Invalid request", details: data.error.flatten() }); return; }
+  const tid = tenantId(req);
+  try {
+    const updated = await prisma.addonGroupItem.updateMany({ where: { id: req.params.id, tenantId: tid, addonGroupId: req.params.groupId }, data: data.data });
+    if (!updated.count) { res.status(404).json({ error: "Not in this group" }); return; }
+    const item = await prisma.addonGroupItem.findUniqueOrThrow({ where: { id: req.params.id }, select: groupItemFields });
+    res.json({ item });
+  } catch (error) {
+    next(error);
+  }
+});
+
+addonGroupsRouter.post("/:groupId/items/reorder", async (req, res, next) => {
+  const data = itemReorderSchema.safeParse(req.body);
+  if (!data.success) { res.status(400).json({ error: "Invalid order", details: data.error.flatten() }); return; }
+  const tid = tenantId(req);
+  try {
+    const owned = await prisma.addonGroupItem.count({ where: { id: { in: data.data.orderedIds }, tenantId: tid, addonGroupId: req.params.groupId } });
+    if (owned !== new Set(data.data.orderedIds).size) { res.status(400).json({ error: "Every entry must belong to this group" }); return; }
+    await prisma.$transaction(data.data.orderedIds.map((id, index) => prisma.addonGroupItem.update({ where: { id }, data: { sortOrder: index } })));
+    const items = await prisma.addonGroupItem.findMany({ where: { tenantId: tid, addonGroupId: req.params.groupId }, select: groupItemFields, orderBy: groupItemOrderBy });
+    res.json({ items });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Remove an add-on from the group (the add-on itself is untouched).
+addonGroupsRouter.delete("/:groupId/items/:id", async (req, res, next) => {
+  try {
+    const deleted = await prisma.addonGroupItem.deleteMany({ where: { id: req.params.id, tenantId: tenantId(req), addonGroupId: req.params.groupId } });
+    if (!deleted.count) { res.status(404).json({ error: "Not in this group" }); return; }
     res.status(204).send();
   } catch (error) {
     next(error);

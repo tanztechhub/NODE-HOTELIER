@@ -38,7 +38,7 @@ const addonFields = {
   isActive: true,
   createdAt: true,
   updatedAt: true,
-  _count: { select: { orderItems: true, menuItems: true } },
+  _count: { select: { orderItems: true, menuItems: true, groupLinks: true } },
 } as const;
 const orderBy: Prisma.AddonOrderByWithRelationInput[] = [{ isActive: "desc" }, { name: "asc" }];
 
@@ -115,14 +115,18 @@ addonsRouter.patch("/:id", async (req, res, next) => {
 
 addonsRouter.delete("/:id", async (req, res, next) => {
   try {
-    const existing = await prisma.addon.findFirst({ where: { id: req.params.id, tenantId: tenantId(req) }, select: { id: true, _count: { select: { orderItems: true, menuItems: true } } } });
+    const existing = await prisma.addon.findFirst({ where: { id: req.params.id, tenantId: tenantId(req) }, select: { id: true, _count: { select: { orderItems: true, menuItems: true, groupLinks: true } } } });
     if (!existing) { res.status(404).json({ error: "Add-on not found" }); return; }
     if (existing._count.orderItems > 0) {
       res.status(409).json({ error: `This add-on is on ${existing._count.orderItems} order${existing._count.orderItems === 1 ? "" : "s"} — deactivate it instead` });
       return;
     }
+    if (existing._count.groupLinks > 0) {
+      res.status(409).json({ error: `This add-on is in ${existing._count.groupLinks} group${existing._count.groupLinks === 1 ? "" : "s"} — remove it from those first` });
+      return;
+    }
     if (existing._count.menuItems > 0) {
-      res.status(409).json({ error: `This add-on is attached to ${existing._count.menuItems} menu item${existing._count.menuItems === 1 ? "" : "s"} — remove it from those first` });
+      res.status(409).json({ error: `This add-on is attached directly to ${existing._count.menuItems} menu item${existing._count.menuItems === 1 ? "" : "s"} — remove it from those first` });
       return;
     }
     await prisma.addon.delete({ where: { id: existing.id } });

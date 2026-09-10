@@ -255,6 +255,7 @@ model Tenant {
   menuCategories     MenuCategory[]
   menuItemVariants   MenuItemVariant[]
   addonGroups        AddonGroup[]
+  addonGroupItems    AddonGroupItem[]
   recipes            Recipe[]
   tables             Table[]
   payments           Payment[]
@@ -1580,6 +1581,7 @@ model Addon {
   tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   orderItems  PosOrderItemAddon[]
   menuItems   MenuItem[]
+  groupLinks  AddonGroupItem[]
 
   @@unique([tenantId, name])
   @@unique([tenantId, sku])
@@ -1621,9 +1623,30 @@ model AddonGroup {
   sortOrder     Int                @default(0)
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
+  items         AddonGroupItem[]
 
   @@unique([tenantId, name])
   @@index([tenantId, isActive, sortOrder])
+}
+
+// M2M between AddonGroup and Addon, with per-group ordering. A group has
+// many add-ons; an add-on lives in many groups. (addonGroupId, addonId)
+// is unique so the same add-on can't be added to one group twice.
+model AddonGroupItem {
+  id           String     @id @default(cuid())
+  tenantId     String
+  addonGroupId String
+  addonId      String
+  sortOrder    Int        @default(0)
+  isActive     Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  addonGroup   AddonGroup @relation(fields: [addonGroupId], references: [id], onDelete: Cascade)
+  addon        Addon      @relation(fields: [addonId], references: [id], onDelete: Cascade)
+
+  @@unique([addonGroupId, addonId])
+  @@index([tenantId, addonGroupId, sortOrder])
 }
 
 // A recipe is how a chef makes a dish: ordered prep steps, an estimated
