@@ -52,7 +52,7 @@ type OrderLineInput = z.infer<typeof orderLineSchema>;
 // and the product/recipe used later for stock deduction. Add-ons are a flat
 // tenant catalog now — validated separately, not per item.
 const menuLineInclude = {
-  variants: { where: { isActive: true } },
+  variants: { where: { isActive: true }, include: { stockProduct: { select: { id: true, name: true } } } },
   product: true,
   recipe: { include: { ingredients: { include: { product: true } } } },
 } satisfies Prisma.MenuItemInclude;
@@ -186,7 +186,7 @@ function tenantIdFor(request: { tenantId?: string }): string {
 export const orderInclude = {
   items: { include: {
     menuItem: { include: { product: true, recipe: { include: { ingredients: { include: { product: true } } } } } },
-    variant: { select: { id: true, name: true } },
+    variant: { select: { id: true, name: true, stockProductId: true, stockQtyPerUnit: true, stockProduct: { select: { id: true, name: true } } } },
     product: { select: { id: true, name: true, unit: true } },
     service: { select: { id: true, name: true, unit: { select: { name: true } } } },
     addons: { include: { addon: true } },
@@ -609,8 +609,10 @@ posRouter.patch("/orders/:id/items/:itemId", async (req, res) => {
         const stockLocationId = await resolveStockLocationId(tid, order.locationId);
         if (!stockLocationId) throw Object.assign(new Error("No location is configured to hold stock for this order"), { status: 400 });
         const mi = menuItemsById.get(existing.menuItemId!)!;
-        const before = computeStockRequirements([{ quantity: existing.quantity, menuItem: mi }]);
-        const after = computeStockRequirements([{ quantity: resolved.quantity, menuItem: mi }]);
+        const beforeVariant = existing.variantId ? mi.variants.find((v) => v.id === existing.variantId) ?? null : null;
+        const afterVariant = resolved.variantId ? mi.variants.find((v) => v.id === resolved.variantId) ?? null : null;
+        const before = computeStockRequirements([{ quantity: existing.quantity, menuItem: mi, variant: beforeVariant }]);
+        const after = computeStockRequirements([{ quantity: resolved.quantity, menuItem: mi, variant: afterVariant }]);
         await applyStockDelta(tx, tid, stockLocationId, before, after, order.orderNumber, req);
       }
       await tx.posOrderItemAddon.deleteMany({ where: { orderItemId: existing.id } });
@@ -654,7 +656,7 @@ posRouter.delete("/orders/:id/items/:itemId", async (req, res) => {
       if (order.status === "SERVED" && existing.menuItem) {
         const stockLocationId = await resolveStockLocationId(tid, order.locationId);
         if (!stockLocationId) throw Object.assign(new Error("No location is configured to hold stock for this order"), { status: 400 });
-        const before = computeStockRequirements([{ quantity: existing.quantity, menuItem: existing.menuItem }]);
+        const before = computeStockRequirements([{ quantity: existing.quantity, menuItem: existing.menuItem, variant: existing.variant }]);
         await applyStockDelta(tx, tid, stockLocationId, before, new Map(), order.orderNumber, req);
       }
       await tx.posOrderItem.delete({ where: { id: existing.id } });
@@ -676,24 +678,38 @@ async function resolveStockLocationId(tid: string, orderLocationId: string | nul
   return store?.id ?? null;
 }
 
+type StockRef = { id: string; name: string };
+type QtyLike = Prisma.Decimal | number | null;
 type OrderItemForStock = {
   quantity: number;
+  variant?: { stockProductId: string | null; stockQtyPerUnit: QtyLike; stockProduct: StockRef | null } | null;
   menuItem: {
-    product: { id: string; name: string } | null;
-    recipe: { ingredients: { product: { id: string; name: string }; quantity: Prisma.Decimal | number }[] } | null;
+    product: StockRef | null;
+    stockQtyPerUnit?: QtyLike;
+    recipe: { ingredients: { product: StockRef; quantity: Prisma.Decimal | number }[] } | null;
   } | null;
 };
 
-/** Totals up how much of each product a set of order items actually needs —
- * a recipe's fractional ingredients if the menu item has one, else 1 unit of
- * its directly-linked product, matching how a whole-bottle bar item works. */
+/** Totals up how much of each product a set of order items actually needs.
+ * Priority per line: a variant's own product+serving (Tot/Double/Bottle) →
+ * the menu item's recipe ingredients → the menu item's directly-linked
+ * product times its stockQtyPerUnit (defaulting to 1 = a whole unit). */
 function computeStockRequirements(items: OrderItemForStock[]): Map<string, { quantity: number; name: string }> {
   const requirements = new Map<string, { quantity: number; name: string }>();
   for (const orderItem of items) {
-    if (!orderItem.menuItem) continue;
-    const ingredients = orderItem.menuItem.recipe?.ingredients.length
-      ? orderItem.menuItem.recipe.ingredients.map((ingredient) => ({ item: ingredient.product, quantity: Number(ingredient.quantity) }))
-      : orderItem.menuItem.product ? [{ item: orderItem.menuItem.product, quantity: 1 }] : [];
+    const v = orderItem.variant;
+    let ingredients: { item: StockRef; quantity: number }[];
+    if (v?.stockProductId && v.stockProduct) {
+      ingredients = [{ item: v.stockProduct, quantity: Number(v.stockQtyPerUnit ?? 1) }];
+    } else if (!orderItem.menuItem) {
+      continue;
+    } else if (orderItem.menuItem.recipe?.ingredients.length) {
+      ingredients = orderItem.menuItem.recipe.ingredients.map((ingredient) => ({ item: ingredient.product, quantity: Number(ingredient.quantity) }));
+    } else if (orderItem.menuItem.product) {
+      ingredients = [{ item: orderItem.menuItem.product, quantity: Number(orderItem.menuItem.stockQtyPerUnit ?? 1) }];
+    } else {
+      continue;
+    }
     for (const ingredient of ingredients) {
       const required = ingredient.quantity * orderItem.quantity;
       const current = requirements.get(ingredient.item.id);
