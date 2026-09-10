@@ -123,6 +123,9 @@ enum PosOrderStatus {
   SERVED
   COMPLETED
   CANCELLED
+  // A cancellation the waiter requested (with a reason) that an admin has
+  // not yet approved or rejected. The order is frozen while it waits.
+  PENDING_CANCELLATION
 }
 
 // Which catalog/POS screen created this order. PRODUCTS/SERVICES orders
@@ -1449,33 +1452,43 @@ model MenuItemVariant {
 }
 
 model PosOrder {
-  id            String          @id @default(cuid())
-  tenantId      String
-  reservationId String?
+  id                 String          @id @default(cuid())
+  tenantId           String
+  reservationId      String?
   // Who this order is actually for — independent of tableId (which is just
   // informational: how many people are at that table) and independent of
   // whether/how it eventually gets paid. Set at creation when known, or
   // derived from the reservation's own guest if billed to a room at
   // settlement time.
-  customerId    String?
-  tableId       String?
-  locationId    String?
-  orderNumber   Int
-  status        PosOrderStatus  @default(OPEN)
-  channel       PosOrderChannel @default(FOOD)
-  discount      Decimal         @default(0) @db.Decimal(12, 2)
-  notes         String?
-  readyAt       DateTime?
-  servedAt      DateTime?
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
-  tenant        Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  reservation   Reservation?    @relation(fields: [reservationId], references: [id], onDelete: SetNull)
-  customer      Customer?       @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  table         Table?          @relation(fields: [tableId], references: [id], onDelete: SetNull)
-  location      Location?       @relation(fields: [locationId], references: [id], onDelete: SetNull)
-  items         PosOrderItem[]
-  payments      Payment[]
+  customerId         String?
+  tableId            String?
+  locationId         String?
+  orderNumber        Int
+  status             PosOrderStatus  @default(OPEN)
+  channel            PosOrderChannel @default(FOOD)
+  discount           Decimal         @default(0) @db.Decimal(12, 2)
+  notes              String?
+  readyAt            DateTime?
+  servedAt           DateTime?
+  // Cancellation approval trail. A cancel request records the reason, who
+  // asked, and the status to fall back to if an admin rejects it; the
+  // decision fields are filled when an admin approves or rejects.
+  cancelReason       String?
+  cancelRequestedBy  String?
+  cancelRequestedAt  DateTime?
+  cancelDecidedBy    String?
+  cancelDecidedAt    DateTime?
+  cancelDecisionNote String?
+  statusBeforeCancel PosOrderStatus?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  tenant             Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  reservation        Reservation?    @relation(fields: [reservationId], references: [id], onDelete: SetNull)
+  customer           Customer?       @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  table              Table?          @relation(fields: [tableId], references: [id], onDelete: SetNull)
+  location           Location?       @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  items              PosOrderItem[]
+  payments           Payment[]
 
   @@unique([tenantId, orderNumber])
   @@index([tenantId, status, createdAt])

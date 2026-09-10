@@ -2,7 +2,7 @@ import { Router } from "express";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 
-import { requireModule } from "../../middleware/tenantContext.js";
+import { requireModule, requireAdmin } from "../../middleware/tenantContext.js";
 import { prisma } from "../../lib/prisma.js";
 import { computeOrderFinancials } from "../../lib/orderTotals.js";
 import { nextTransactionNo } from "../../lib/sequence.js";
@@ -287,7 +287,7 @@ async function releaseTableIfIdle(tx: Prisma.TransactionClient, tableId: string)
 // "unallocated = everywhere" convention used for menu items/tables.
 posRouter.get("/orders", async (req, res) => {
   const query = z.object({
-    status: z.enum(["OPEN", "PREPARING", "READY", "SERVED", "COMPLETED", "CANCELLED"]).optional(),
+    status: z.enum(["OPEN", "PREPARING", "READY", "SERVED", "COMPLETED", "CANCELLED", "PENDING_CANCELLATION"]).optional(),
     channel: z.enum(["FOOD", "PRODUCTS", "SERVICES"]).optional(),
     locationId: z.string().cuid().optional(),
   }).safeParse(req.query);
@@ -689,18 +689,93 @@ posRouter.patch("/orders/:id/serve", async (req, res) => {
   res.status(200).json({ order: withFinancials(await prisma.posOrder.findUniqueOrThrow({ where: { id: activeOrder.id }, include: orderInclude }), tax) });
 });
 
-/** Cancels an order before it's been served — stock isn't committed until serve, so OPEN/PREPARING/READY are all safe to cancel. */
+const cancelRequestSchema = z.object({ reason: z.string().trim().min(3, "Give a reason").max(500) });
+const rejectCancelSchema = z.object({ note: z.string().trim().max(500).optional() });
+
+/** A waiter requests a cancellation — every cancel needs admin approval, so
+ * this just parks the order in PENDING_CANCELLATION with a reason. The table
+ * stays held and the order stays off the Active tab until an admin decides. */
 posRouter.patch("/orders/:id/cancel", async (req, res) => {
+  const parsed = cancelRequestSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid request", details: parsed.error.flatten() }); return; }
   const tid = tenantIdFor(req);
   const existing = await prisma.posOrder.findFirst({ where: { id: req.params.id, tenantId: tid } });
   if (!existing) { res.status(404).json({ error: "Order not found" }); return; }
-  if (!["OPEN", "PREPARING", "READY"].includes(existing.status)) { res.status(409).json({ error: "Only orders that haven't been served yet can be cancelled" }); return; }
-  await prisma.$transaction(async (tx) => {
-    await tx.posOrder.update({ where: { id: existing.id }, data: { status: "CANCELLED" } });
-    if (existing.tableId) await releaseTableIfIdle(tx, existing.tableId);
+  if (existing.status === "PENDING_CANCELLATION") { res.status(409).json({ error: "This order is already waiting for a cancellation decision" }); return; }
+  if (["COMPLETED", "CANCELLED"].includes(existing.status)) { res.status(409).json({ error: "This order is finalized and can't be cancelled" }); return; }
+  const updated = await prisma.posOrder.update({
+    where: { id: existing.id },
+    data: {
+      status: "PENDING_CANCELLATION",
+      statusBeforeCancel: existing.status,
+      cancelReason: parsed.data.reason,
+      cancelRequestedBy: req.userId ?? null,
+      cancelRequestedAt: new Date(),
+      cancelDecidedBy: null,
+      cancelDecidedAt: null,
+      cancelDecisionNote: null,
+    },
+    include: orderInclude,
   });
   const tax = await taxSettingsFor(tid);
-  res.status(200).json({ order: withFinancials(await prisma.posOrder.findUniqueOrThrow({ where: { id: existing.id }, include: orderInclude }), tax) });
+  res.status(200).json({ order: withFinancials(updated, tax) });
+});
+
+/** Admin approves a pending cancellation → CANCELLED. Frees the table, and
+ * for an order that had already been served, returns its stock. Blocked if
+ * the order has taken any payment (that needs a manual refund first). */
+posRouter.post("/orders/:id/cancel/approve", requireAdmin, async (req, res) => {
+  const id = req.params.id as string;
+  const tid = tenantIdFor(req);
+  const order = await prisma.posOrder.findFirst({ where: { id, tenantId: tid }, include: orderInclude });
+  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
+  if (order.status !== "PENDING_CANCELLATION") { res.status(409).json({ error: "This order isn't waiting for a cancellation decision" }); return; }
+  if (order.payments.length > 0) { res.status(409).json({ error: "This order has recorded payments — refund those before cancelling it" }); return; }
+  try {
+    const updated = await prisma.$transaction(async (tx) => {
+      if (order.statusBeforeCancel === "SERVED") {
+        const stockLocationId = await resolveStockLocationId(tid, order.locationId);
+        if (stockLocationId) {
+          const req0 = computeStockRequirements(order.items);
+          await applyStockDelta(tx, tid, stockLocationId, req0, new Map(), order.orderNumber, req);
+        }
+      }
+      await tx.posOrder.update({ where: { id: order.id }, data: { status: "CANCELLED", cancelDecidedBy: req.userId ?? null, cancelDecidedAt: new Date() } });
+      if (order.tableId) await releaseTableIfIdle(tx, order.tableId);
+      return tx.posOrder.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
+    });
+    const tax = await taxSettingsFor(tid);
+    res.status(200).json({ order: withFinancials(updated, tax) });
+  } catch (error) {
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
+    throw error;
+  }
+});
+
+/** Admin rejects a pending cancellation → the order returns to whatever
+ * status it was in before the request. The reason and the decision note are
+ * kept for the record. */
+posRouter.post("/orders/:id/cancel/reject", requireAdmin, async (req, res) => {
+  const id = req.params.id as string;
+  const parsed = rejectCancelSchema.safeParse(req.body ?? {});
+  if (!parsed.success) { res.status(400).json({ error: "Invalid request", details: parsed.error.flatten() }); return; }
+  const tid = tenantIdFor(req);
+  const order = await prisma.posOrder.findFirst({ where: { id, tenantId: tid } });
+  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
+  if (order.status !== "PENDING_CANCELLATION") { res.status(409).json({ error: "This order isn't waiting for a cancellation decision" }); return; }
+  const updated = await prisma.posOrder.update({
+    where: { id: order.id },
+    data: {
+      status: order.statusBeforeCancel ?? "OPEN",
+      statusBeforeCancel: null,
+      cancelDecidedBy: req.userId ?? null,
+      cancelDecidedAt: new Date(),
+      cancelDecisionNote: parsed.data.note ?? null,
+    },
+    include: orderInclude,
+  });
+  const tax = await taxSettingsFor(tid);
+  res.status(200).json({ order: withFinancials(updated, tax) });
 });
 
 /** Settles a served order's bill — cash/card/etc. now, or charged to a
