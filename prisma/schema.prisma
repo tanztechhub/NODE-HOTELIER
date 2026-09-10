@@ -1562,19 +1562,27 @@ model PosOrderItem {
   @@index([orderId])
 }
 
+// A reusable add-on (Cheddar, Bacon, Extra Espresso). Independent of any one
+// menu item — the same record is shared across many add-on groups (Phase 6),
+// which are in turn attached to menu items (Phase 7). The legacy direct
+// `menuItems` M2M is kept only so the old Menu & Add-ons screen keeps working.
 model Addon {
-  id         String              @id @default(cuid())
-  tenantId   String
-  name       String
-  price      Decimal             @db.Decimal(12, 2)
-  isActive   Boolean             @default(true)
-  createdAt  DateTime            @default(now())
-  updatedAt  DateTime            @updatedAt
-  tenant     Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  orderItems PosOrderItemAddon[]
-  menuItems  MenuItem[]
+  id          String              @id @default(cuid())
+  tenantId    String
+  name        String
+  description String?
+  price       Decimal             @db.Decimal(12, 2)
+  sku         String?
+  imageUrl    String?
+  isActive    Boolean             @default(true)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orderItems  PosOrderItemAddon[]
+  menuItems   MenuItem[]
 
   @@unique([tenantId, name])
+  @@unique([tenantId, sku])
 }
 
 model PosOrderItemAddon {
