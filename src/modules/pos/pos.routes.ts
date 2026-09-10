@@ -40,28 +40,11 @@ const addItemsSchema = z.object({ items: z.array(orderLineSchema).min(1) });
 
 type OrderLineInput = z.infer<typeof orderLineSchema>;
 
-// Everything resolveMenuLines needs to price a line and enforce the menu's
-// rules: active variants, the add-on groups attached to the item (with their
-// members and SINGLE/MULTIPLE + min/max/required rules), the legacy flat
-// add-on M2M as a fallback for items not yet migrated to groups, and the
-// product/recipe used later for stock deduction.
+// What resolveMenuLines needs to price a line: the item's active variants
+// and the product/recipe used later for stock deduction. Add-ons are a flat
+// tenant catalog now — validated separately, not per item.
 const menuLineInclude = {
   variants: { where: { isActive: true } },
-  addons: { select: { id: true, price: true } },
-  addonGroupLinks: {
-    where: { isActive: true, addonGroup: { isActive: true } },
-    orderBy: { sortOrder: "asc" },
-    include: {
-      addonGroup: {
-        include: {
-          items: {
-            where: { isActive: true, addon: { isActive: true } },
-            include: { addon: { select: { id: true, name: true, price: true } } },
-          },
-        },
-      },
-    },
-  },
   product: true,
   recipe: { include: { ingredients: { include: { product: true } } } },
 } satisfies Prisma.MenuItemInclude;
@@ -81,20 +64,27 @@ type ResolvedLine = {
 } & LineTaxSnapshot;
 
 /** Validates a set of POS order lines against the current menu — item
- * availability, variant choice (required once an item has variants), add-on
- * membership, and every attached add-on group's SINGLE/MULTIPLE + min/max/
- * required rules — and returns each line with its resolved prices, plus the
- * menu items (with product/recipe) for downstream stock maths. Throws
- * { status: 400 } on the first rule violation. */
+ * availability, variant choice (required once an item has variants), and
+ * that every chosen add-on is an active add-on for this tenant — and returns
+ * each line with its resolved prices and tax snapshot, plus the menu items
+ * (with product/recipe) for downstream stock maths. Throws { status: 400 }
+ * on the first problem. */
 async function resolveMenuLines(tid: string, lines: OrderLineInput[], taxDefaults: TaxDefaults | null) {
   const menuItemIds = [...new Set(lines.map((line) => line.menuItemId))];
-  const menuItems = await prisma.menuItem.findMany({
-    where: { id: { in: menuItemIds }, tenantId: tid, isAvailable: true },
-    include: menuLineInclude,
-  });
+  const addonIds = [...new Set(lines.flatMap((line) => line.addons.map((a) => a.addonId)))];
+  const [menuItems, addons] = await Promise.all([
+    prisma.menuItem.findMany({ where: { id: { in: menuItemIds }, tenantId: tid, isAvailable: true }, include: menuLineInclude }),
+    addonIds.length
+      ? prisma.addon.findMany({ where: { id: { in: addonIds }, tenantId: tid, isActive: true }, select: { id: true, price: true } })
+      : Promise.resolve([]),
+  ]);
   const byId = new Map(menuItems.map((item) => [item.id, item]));
   if (byId.size !== menuItemIds.length) {
     throw Object.assign(new Error("Every order item must be an available menu item from this café"), { status: 400 });
+  }
+  const priceByAddon = new Map(addons.map((a) => [a.id, a.price]));
+  if (priceByAddon.size !== addonIds.length) {
+    throw Object.assign(new Error("Every add-on must be an active add-on from this café"), { status: 400 });
   }
 
   const resolved: ResolvedLine[] = lines.map((line) => {
@@ -111,32 +101,6 @@ async function resolveMenuLines(tid: string, lines: OrderLineInput[], taxDefault
       unitPrice = variant.price;
     } else if (item.variants.length > 0) {
       throw Object.assign(new Error(`Choose an option for ${item.name}`), { status: 400 });
-    }
-
-    const groups = item.addonGroupLinks.map((link) => link.addonGroup);
-    const priceByAddon = new Map<string, Prisma.Decimal>();
-    for (const addon of item.addons) priceByAddon.set(addon.id, addon.price);
-    for (const group of groups) for (const gi of group.items) priceByAddon.set(gi.addonId, gi.addon.price);
-
-    // Membership: an add-on must belong to one of the item's groups, or —
-    // for an item still on the legacy flat M2M with no groups — be directly
-    // linked to it.
-    const groupAddonIds = new Set<string>();
-    for (const group of groups) for (const gi of group.items) groupAddonIds.add(gi.addonId);
-    const legacyAddonIds = new Set(item.addons.map((addon) => addon.id));
-    for (const sel of line.addons) {
-      const ok = groupAddonIds.has(sel.addonId) || (groups.length === 0 && legacyAddonIds.has(sel.addonId));
-      if (!ok) throw Object.assign(new Error(`That add-on isn't offered for ${item.name}`), { status: 400 });
-    }
-
-    // Per-group counts against min/max/required. SINGLE caps effective max at 1.
-    for (const group of groups) {
-      const ids = new Set(group.items.map((gi) => gi.addonId));
-      const count = line.addons.filter((sel) => ids.has(sel.addonId)).reduce((n, sel) => n + sel.quantity, 0);
-      const effMax = group.selectionType === "SINGLE" ? 1 : group.maxSelections;
-      const effMin = Math.max(group.minSelections, group.required ? 1 : 0);
-      if (effMax > 0 && count > effMax) throw Object.assign(new Error(`Choose at most ${effMax} from "${group.name}" for ${item.name}`), { status: 400 });
-      if (count < effMin) throw Object.assign(new Error(`Choose at least ${effMin} from "${group.name}" for ${item.name}`), { status: 400 });
     }
 
     return {
@@ -677,8 +641,15 @@ posRouter.get("/orders/:id", async (req, res) => {
   res.status(200).json({ order: withFinancials(order, tax) });
 });
 
-/** Reusable client add-ons for the checkout screen. Managed (create/edit/delete) via /menu/addons. */
-posRouter.get("/addons", async (req, res) => res.json({ addons: await prisma.addon.findMany({ where: { tenantId: tenantIdFor(req) }, orderBy: { name: "asc" } }) }));
+/** The full active add-on catalog for the checkout add-on picker, each with
+ * its menu category so the client can filter. Managed via /api/addons. */
+posRouter.get("/addons", async (req, res) => res.json({
+  addons: await prisma.addon.findMany({
+    where: { tenantId: tenantIdFor(req), isActive: true },
+    select: { id: true, name: true, description: true, price: true, imageUrl: true, menuCategoryId: true, menuCategory: { select: { id: true, name: true } } },
+    orderBy: [{ menuCategory: { name: "asc" } }, { name: "asc" }],
+  }),
+}));
 
 /** Returns the café-wide POS policy for this tenant. */
 posRouter.get("/settings", async (req, res) => {
@@ -731,36 +702,16 @@ posRouter.get("/menu-items", async (req, res) => {
     include: {
       menuCategory: true,
       product: true,
-      addons: true,
       locations: { select: { id: true, name: true } },
       recipe: { include: { ingredients: { include: { product: true } } } },
       variants: { where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }], select: { id: true, name: true, price: true, sku: true } },
-      addonGroupLinks: {
-        where: { isActive: true, addonGroup: { isActive: true } },
-        orderBy: { sortOrder: "asc" },
-        select: {
-          addonGroup: {
-            select: {
-              id: true, name: true, description: true, selectionType: true,
-              minSelections: true, maxSelections: true, required: true,
-              items: {
-                where: { isActive: true, addon: { isActive: true } },
-                orderBy: [{ sortOrder: "asc" }, { addon: { name: "asc" } }],
-                select: { addon: { select: { id: true, name: true, description: true, price: true, imageUrl: true } } },
-              },
-            },
-          },
-        },
-      },
     },
     orderBy: [{ menuCategory: { sortOrder: "asc" } }, { sortOrder: "asc" }, { name: "asc" }],
   });
   // The client still reads `.category` — keep that shape, sourced from the
-  // menu's own category table now. `addonGroups` is the structured add-on
-  // model (groups + their SINGLE/MULTIPLE + min/max/required rules);
-  // `addons` stays the legacy flat list, used only for items not yet moved
-  // onto groups (matches resolveMenuLines' fallback).
-  const items = rows.map(({ menuCategory, addonGroupLinks, taxRate, taxMode, taxTreatment, ...item }) => ({
+  // menu's own category table now. Add-ons come from GET /pos/addons (a flat
+  // catalog), not per item.
+  const items = rows.map(({ menuCategory, taxRate, taxMode, taxTreatment, ...item }) => ({
     ...item,
     category: menuCategory,
     // Resolved effective tax (item override else tenant default) so the cart
@@ -769,16 +720,6 @@ posRouter.get("/menu-items", async (req, res) => {
     taxRate: taxRate ?? taxDefaults?.taxRate ?? null,
     taxMode: taxMode ?? taxDefaults?.taxMode ?? null,
     taxTreatment: taxTreatment ?? taxDefaults?.taxTreatment ?? null,
-    addonGroups: addonGroupLinks.map((link) => ({
-      id: link.addonGroup.id,
-      name: link.addonGroup.name,
-      description: link.addonGroup.description,
-      selectionType: link.addonGroup.selectionType,
-      minSelections: link.addonGroup.minSelections,
-      maxSelections: link.addonGroup.maxSelections,
-      required: link.addonGroup.required,
-      addons: link.addonGroup.items.map((gi) => gi.addon),
-    })),
   }));
   res.status(200).json({ items });
 });

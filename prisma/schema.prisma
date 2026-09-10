@@ -30,12 +30,14 @@ enum AppointmentStatus {
   CANCELLED
   NO_SHOW
 }
+
 enum MembershipStatus {
   ACTIVE
   PAUSED
   EXPIRED
   CANCELLED
 }
+
 enum PaymentStatus {
   PENDING
   PAID
@@ -253,61 +255,58 @@ model Tenant {
   maxDevices        Int           @default(10)
   lastLicenseCheck  DateTime?
 
-  tenantModules      TenantModule[]
-  cafeSettings       CafeSettings?
-  categories         Category[]
-  products           Product[]
-  productStocks      ProductStock[]
-  inventoryMovements InventoryMovement[]
-  posOrders          PosOrder[]
-  addons             Addon[]
-  menuItems          MenuItem[]
-  menuCategories     MenuCategory[]
-  menuItemVariants   MenuItemVariant[]
-  addonGroups        AddonGroup[]
-  addonGroupItems    AddonGroupItem[]
-  menuItemAddonGroups MenuItemAddonGroup[]
-  recipes            Recipe[]
-  tables             Table[]
-  payments           Payment[]
-  locations          Location[]
-  customers          Customer[]
-  tenantSequences    TenantSequence[]
-  reservationGuests  ReservationGuest[]
-  folios             Folio[]
-  folioLineItems     FolioLineItem[]
-  folioPayments      FolioPayment[]
-  rooms              Room[]
-  roomTypes          RoomType[]
-  roomRates          RoomRate[]
-  serviceCategories  ServiceCategory[]
-  unitsOfMeasure     UnitOfMeasure[]
-  services           Service[]
-  reservations       Reservation[]
-  housekeepingTasks  HousekeepingTask[]
-  employees          Employee[]
-  departments        Department[]
-  businessProfile    BusinessProfile?
-  roles              Role[]
-  sessions           Session[]
-  paymentMethods     PaymentMethod[]
-  transactions       Transaction[]
-  expenseCategories  ExpenseCategory[]
-  expenses           Expense[]
-  lostFoundItems     LostFoundItem[]
+  tenantModules         TenantModule[]
+  cafeSettings          CafeSettings?
+  categories            Category[]
+  products              Product[]
+  productStocks         ProductStock[]
+  inventoryMovements    InventoryMovement[]
+  posOrders             PosOrder[]
+  addons                Addon[]
+  menuItems             MenuItem[]
+  menuCategories        MenuCategory[]
+  menuItemVariants      MenuItemVariant[]
+  recipes               Recipe[]
+  tables                Table[]
+  payments              Payment[]
+  locations             Location[]
+  customers             Customer[]
+  tenantSequences       TenantSequence[]
+  reservationGuests     ReservationGuest[]
+  folios                Folio[]
+  folioLineItems        FolioLineItem[]
+  folioPayments         FolioPayment[]
+  rooms                 Room[]
+  roomTypes             RoomType[]
+  roomRates             RoomRate[]
+  serviceCategories     ServiceCategory[]
+  unitsOfMeasure        UnitOfMeasure[]
+  services              Service[]
+  reservations          Reservation[]
+  housekeepingTasks     HousekeepingTask[]
+  employees             Employee[]
+  departments           Department[]
+  businessProfile       BusinessProfile?
+  roles                 Role[]
+  sessions              Session[]
+  paymentMethods        PaymentMethod[]
+  transactions          Transaction[]
+  expenseCategories     ExpenseCategory[]
+  expenses              Expense[]
+  lostFoundItems        LostFoundItem[]
   reservationActivities ReservationActivity[]
-  assets             Asset[]
-  assetMovements     AssetMovement[]
-  suppliers          Supplier[]
-  purchases          Purchase[]
-  purchaseRequisitions PurchaseRequisition[]
+  assets                Asset[]
+  assetMovements        AssetMovement[]
+  suppliers             Supplier[]
+  purchases             Purchase[]
+  purchaseRequisitions  PurchaseRequisition[]
   serviceCenterServices ServiceCenterService[]
-  serviceProviders ServiceProvider[]
-  providerSchedules ProviderSchedule[]
-  membershipPlans MembershipPlan[]
-  memberships Membership[]
-  membershipPayments MembershipPayment[]
-  appointments Appointment[]
+  serviceProviders      ServiceProvider[]
+  providerSchedules     ProviderSchedule[]
+  membershipPlans       MembershipPlan[]
+  memberships           Membership[]
+  membershipPayments    MembershipPayment[]
+  appointments          Appointment[]
 }
 
 enum CustomerType {
@@ -396,20 +395,20 @@ model Customer {
   emergencyContactRelationship String?
   emergencyContactPhone        String?
 
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  createdBy    String?
-  updatedBy    String?
-  locationId   String?
-  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  reservations Reservation[]
-  transactions Transaction[]
-  posOrders    PosOrder[]
-  createdByEmployee Employee? @relation("CustomerCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
-  updatedByEmployee Employee? @relation("CustomerUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
-  location          Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
-  memberships Membership[]
-  appointments Appointment[]
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  createdBy         String?
+  updatedBy         String?
+  locationId        String?
+  tenant            Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  reservations      Reservation[]
+  transactions      Transaction[]
+  posOrders         PosOrder[]
+  createdByEmployee Employee?     @relation("CustomerCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedByEmployee Employee?     @relation("CustomerUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  location          Location?     @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  memberships       Membership[]
+  appointments      Appointment[]
 
   @@unique([tenantId, customerNo])
   @@index([tenantId, lastName, firstName])
@@ -453,17 +452,17 @@ enum MealPlan {
 }
 
 model RoomRate {
-  id         String   @id @default(cuid())
-  tenantId   String
-  roomTypeId String
-  mealPlan   MealPlan
-  price      Decimal  @db.Decimal(12, 2)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  createdBy  String?
-  updatedBy  String?
-  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  roomType   RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Cascade)
+  id                String    @id @default(cuid())
+  tenantId          String
+  roomTypeId        String
+  mealPlan          MealPlan
+  price             Decimal   @db.Decimal(12, 2)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  createdBy         String?
+  updatedBy         String?
+  tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roomType          RoomType  @relation(fields: [roomTypeId], references: [id], onDelete: Cascade)
   createdByEmployee Employee? @relation("RoomRateCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
   updatedByEmployee Employee? @relation("RoomRateUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
 
@@ -472,23 +471,23 @@ model RoomRate {
 }
 
 model RoomType {
-  id          String     @id @default(cuid())
-  tenantId    String
-  name        String
-  description String?
-  capacity    Int        @default(2)
-  baseRate    Decimal    @db.Decimal(12, 2)
-  amenities   String[]   @default([])
-  isActive    Boolean    @default(true)
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  createdBy   String?
-  updatedBy   String?
-  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  rooms       Room[]
-  rates       RoomRate[]
-  createdByEmployee Employee? @relation("RoomTypeCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
-  updatedByEmployee Employee? @relation("RoomTypeUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  id                String     @id @default(cuid())
+  tenantId          String
+  name              String
+  description       String?
+  capacity          Int        @default(2)
+  baseRate          Decimal    @db.Decimal(12, 2)
+  amenities         String[]   @default([])
+  isActive          Boolean    @default(true)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  createdBy         String?
+  updatedBy         String?
+  tenant            Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rooms             Room[]
+  rates             RoomRate[]
+  createdByEmployee Employee?  @relation("RoomTypeCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedByEmployee Employee?  @relation("RoomTypeUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, name])
   @@index([tenantId, isActive])
@@ -548,23 +547,23 @@ model Service {
 }
 
 model HousekeepingTask {
-  id          String                 @id @default(cuid())
-  tenantId    String
-  roomId      String
-  type        HousekeepingTaskType   @default(CLEANING)
-  status      HousekeepingTaskStatus @default(PENDING)
-  assignedTo  String?
-  notes       String?
-  dueAt       DateTime?
-  completedAt DateTime?
-  createdAt   DateTime               @default(now())
-  updatedAt   DateTime               @updatedAt
-  createdBy   String?
-  updatedBy   String?
-  tenant      Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  room        Room                   @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  createdByEmployee Employee?        @relation("HousekeepingTaskCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
-  updatedByEmployee Employee?        @relation("HousekeepingTaskUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  id                String                 @id @default(cuid())
+  tenantId          String
+  roomId            String
+  type              HousekeepingTaskType   @default(CLEANING)
+  status            HousekeepingTaskStatus @default(PENDING)
+  assignedTo        String?
+  notes             String?
+  dueAt             DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  createdBy         String?
+  updatedBy         String?
+  tenant            Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  room              Room                   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  createdByEmployee Employee?              @relation("HousekeepingTaskCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedByEmployee Employee?              @relation("HousekeepingTaskUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
 
   @@index([tenantId, status])
   @@index([tenantId, roomId])
@@ -629,33 +628,33 @@ enum CancellationReason {
 }
 
 model Reservation {
-  id                 String              @id @default(cuid())
+  id                 String                @id @default(cuid())
   tenantId           String
   reservationNo      String
   customerId         String
   roomId             String
-  source             ReservationSource   @default(WALK_IN)
-  bookingDate        DateTime            @default(now())
+  source             ReservationSource     @default(WALK_IN)
+  bookingDate        DateTime              @default(now())
   checkIn            DateTime
   checkOut           DateTime
-  adults             Int                 @default(1)
-  children           Int                 @default(0)
-  mealPlan           MealPlan            @default(ROOM_ONLY)
-  status             ReservationStatus   @default(PENDING)
+  adults             Int                   @default(1)
+  children           Int                   @default(0)
+  mealPlan           MealPlan              @default(ROOM_ONLY)
+  status             ReservationStatus     @default(PENDING)
   cancellationReason CancellationReason?
   cancellationNotes  String?
   notes              String?
   createdBy          String?
   updatedBy          String?
   locationId         String?
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customer           Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  room               Room                @relation(fields: [roomId], references: [id], onDelete: Restrict)
-  createdByEmployee  Employee?           @relation("ReservationCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
-  updatedByEmployee  Employee?           @relation("ReservationUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
-  location           Location?           @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  tenant             Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer           Customer              @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  room               Room                  @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  createdByEmployee  Employee?             @relation("ReservationCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedByEmployee  Employee?             @relation("ReservationUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  location           Location?             @relation(fields: [locationId], references: [id], onDelete: SetNull)
   posOrders          PosOrder[]
   folio              Folio?
   additionalGuests   ReservationGuest[]
@@ -667,17 +666,17 @@ model Reservation {
 }
 
 model ReservationGuest {
-  id            String      @id @default(cuid())
-  tenantId      String
-  reservationId String
-  name          String
-  idNumber      String?
-  notes         String?
-  addedAt       DateTime    @default(now())
-  addedBy       String?
-  tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
-  addedByEmployee Employee? @relation(fields: [addedBy], references: [id], onDelete: SetNull)
+  id              String      @id @default(cuid())
+  tenantId        String
+  reservationId   String
+  name            String
+  idNumber        String?
+  notes           String?
+  addedAt         DateTime    @default(now())
+  addedBy         String?
+  tenant          Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  reservation     Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  addedByEmployee Employee?   @relation(fields: [addedBy], references: [id], onDelete: SetNull)
 
   @@index([tenantId, reservationId])
 }
@@ -792,25 +791,25 @@ model FolioPayment {
 // tenant to match that former enum 1:1 so existing data keeps working, but
 // can still be edited/disabled; only deletion is blocked on them.
 model PaymentMethod {
-  id                String         @id @default(cuid())
-  tenantId          String
-  tenant            Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  name              String
-  code              String
-  description       String?
-  isSystem          Boolean        @default(false)
-  isActive          Boolean        @default(true)
-  requiresReference Boolean        @default(false)
-  sortOrder         Int            @default(0)
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
-  folioPayments     FolioPayment[]
-  posPayments       Payment[]
-  transactions      Transaction[]
-  expenses          Expense[]
-  assetMovements    AssetMovement[]
+  id                 String              @id @default(cuid())
+  tenantId           String
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name               String
+  code               String
+  description        String?
+  isSystem           Boolean             @default(false)
+  isActive           Boolean             @default(true)
+  requiresReference  Boolean             @default(false)
+  sortOrder          Int                 @default(0)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  folioPayments      FolioPayment[]
+  posPayments        Payment[]
+  transactions       Transaction[]
+  expenses           Expense[]
+  assetMovements     AssetMovement[]
   membershipPayments MembershipPayment[]
-  appointments Appointment[]
+  appointments       Appointment[]
 
   @@unique([tenantId, code])
   @@unique([tenantId, name])
@@ -929,28 +928,28 @@ enum AssetMovementType {
 // only ever changes through an AssetMovement, never a direct edit, mirroring
 // how Product's stock is never PATCHed directly either.
 model Asset {
-  id          String     @id @default(cuid())
-  tenantId    String
-  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  assetNo     String
-  categoryId  String?
-  category    Category?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  name        String
-  description String?
-  unit        String     @default("Each")
-  quantity    Decimal    @default(0) @db.Decimal(12, 3)
-  unitCost    Decimal?   @db.Decimal(12, 2)
-  locationId  String?
-  location    Location?  @relation(fields: [locationId], references: [id], onDelete: SetNull)
-  isActive    Boolean    @default(true)
-  notes       String?
-  createdBy   String?
-  createdByEmployee Employee? @relation("AssetCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
-  updatedBy   String?
-  updatedByEmployee Employee? @relation("AssetUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  movements   AssetMovement[]
+  id                String          @id @default(cuid())
+  tenantId          String
+  tenant            Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  assetNo           String
+  categoryId        String?
+  category          Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  name              String
+  description       String?
+  unit              String          @default("Each")
+  quantity          Decimal         @default(0) @db.Decimal(12, 3)
+  unitCost          Decimal?        @db.Decimal(12, 2)
+  locationId        String?
+  location          Location?       @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  isActive          Boolean         @default(true)
+  notes             String?
+  createdBy         String?
+  createdByEmployee Employee?       @relation("AssetCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedBy         String?
+  updatedByEmployee Employee?       @relation("AssetUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  movements         AssetMovement[]
 
   @@unique([tenantId, assetNo])
   @@index([tenantId, categoryId])
@@ -986,31 +985,31 @@ model AssetMovement {
 // Carries createdBy/updatedBy from day one, per the audit-trail precedent
 // set by Asset.
 model Supplier {
-  id            String  @id @default(cuid())
-  tenantId      String
-  tenant        Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  name          String
-  contactPerson String?
-  phone         String?
-  email         String?
-  address       String?
-  city          String?
-  taxPin        String?
-  paymentTerms  String?
-  notes         String?
+  id                String                @id @default(cuid())
+  tenantId          String
+  tenant            Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name              String
+  contactPerson     String?
+  phone             String?
+  email             String?
+  address           String?
+  city              String?
+  taxPin            String?
+  paymentTerms      String?
+  notes             String?
   // Running account balance with this supplier — what the property owes
   // them (positive) or has in credit (negative). Not wired to anything yet;
   // Purchases / supplier payments will maintain it later.
-  balance       Decimal @default(0) @db.Decimal(12, 2)
-  isActive      Boolean @default(true)
-  createdBy     String?
-  createdByEmployee Employee? @relation("SupplierCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
-  updatedBy     String?
-  updatedByEmployee Employee? @relation("SupplierUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  purchases     Purchase[]
-  requisitions  PurchaseRequisition[]
+  balance           Decimal               @default(0) @db.Decimal(12, 2)
+  isActive          Boolean               @default(true)
+  createdBy         String?
+  createdByEmployee Employee?             @relation("SupplierCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedBy         String?
+  updatedByEmployee Employee?             @relation("SupplierUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  purchases         Purchase[]
+  requisitions      PurchaseRequisition[]
 
   @@unique([tenantId, name])
   @@index([tenantId, isActive])
@@ -1031,32 +1030,32 @@ enum PurchaseRequisitionStatus {
 // Purchase (PO) is raised from it. Estimated costs only; the real prices
 // land on the Purchase. Line items must reference catalog Products.
 model PurchaseRequisition {
-  id            String                    @id @default(cuid())
-  tenantId      String
-  tenant        Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  requisitionNo String
-  status        PurchaseRequisitionStatus @default(DRAFT)
-  requisitionDate DateTime                @default(now())
-  neededBy      DateTime?
-  purpose       String?
-  notes         String?
+  id                  String                    @id @default(cuid())
+  tenantId            String
+  tenant              Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requisitionNo       String
+  status              PurchaseRequisitionStatus @default(DRAFT)
+  requisitionDate     DateTime                  @default(now())
+  neededBy            DateTime?
+  purpose             String?
+  notes               String?
   // A non-binding hint for whoever raises the eventual PO.
   suggestedSupplierId String?
-  suggestedSupplier   Supplier?           @relation(fields: [suggestedSupplierId], references: [id], onDelete: SetNull)
-  estimatedTotal Decimal                  @default(0) @db.Decimal(12, 2)
-  submittedAt   DateTime?
-  reviewedBy    String?
-  reviewedByEmployee Employee?            @relation("RequisitionReviewedBy", fields: [reviewedBy], references: [id], onDelete: SetNull)
-  reviewedAt    DateTime?
-  reviewNote    String?
-  createdBy     String?
-  createdByEmployee Employee?             @relation("RequisitionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
-  updatedBy     String?
-  updatedByEmployee Employee?             @relation("RequisitionUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
-  createdAt     DateTime                  @default(now())
-  updatedAt     DateTime                  @updatedAt
-  items         PurchaseRequisitionItem[]
-  purchase      Purchase?
+  suggestedSupplier   Supplier?                 @relation(fields: [suggestedSupplierId], references: [id], onDelete: SetNull)
+  estimatedTotal      Decimal                   @default(0) @db.Decimal(12, 2)
+  submittedAt         DateTime?
+  reviewedBy          String?
+  reviewedByEmployee  Employee?                 @relation("RequisitionReviewedBy", fields: [reviewedBy], references: [id], onDelete: SetNull)
+  reviewedAt          DateTime?
+  reviewNote          String?
+  createdBy           String?
+  createdByEmployee   Employee?                 @relation("RequisitionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedBy           String?
+  updatedByEmployee   Employee?                 @relation("RequisitionUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  items               PurchaseRequisitionItem[]
+  purchase            Purchase?
 
   @@unique([tenantId, requisitionNo])
   @@index([tenantId, status])
@@ -1092,33 +1091,33 @@ enum PurchaseStatus {
 // subtotal = sum(lineTotal), taxAmount = subtotal * taxRate/100,
 // total = subtotal + taxAmount. Line items must reference catalog Products.
 model Purchase {
-  id            String         @id @default(cuid())
-  tenantId      String
-  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  purchaseNo    String
-  supplierId    String
-  supplier      Supplier       @relation(fields: [supplierId], references: [id], onDelete: Restrict)
-  status        PurchaseStatus @default(DRAFT)
-  orderDate     DateTime       @default(now())
-  expectedDate  DateTime?
-  reference     String?
-  notes         String?
-  taxRate       Decimal        @default(0) @db.Decimal(5, 2)
-  subtotal      Decimal        @default(0) @db.Decimal(12, 2)
-  taxAmount     Decimal        @default(0) @db.Decimal(12, 2)
-  total         Decimal        @default(0) @db.Decimal(12, 2)
+  id                String               @id @default(cuid())
+  tenantId          String
+  tenant            Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  purchaseNo        String
+  supplierId        String
+  supplier          Supplier             @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  status            PurchaseStatus       @default(DRAFT)
+  orderDate         DateTime             @default(now())
+  expectedDate      DateTime?
+  reference         String?
+  notes             String?
+  taxRate           Decimal              @default(0) @db.Decimal(5, 2)
+  subtotal          Decimal              @default(0) @db.Decimal(12, 2)
+  taxAmount         Decimal              @default(0) @db.Decimal(12, 2)
+  total             Decimal              @default(0) @db.Decimal(12, 2)
   // Set when this PO was created by converting an approved requisition.
-  requisitionId String?              @unique
-  requisition   PurchaseRequisition? @relation(fields: [requisitionId], references: [id], onDelete: SetNull)
-  orderedAt     DateTime?
-  receivedAt    DateTime?
-  createdBy     String?
-  createdByEmployee Employee?  @relation("PurchaseCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
-  updatedBy     String?
-  updatedByEmployee Employee?  @relation("PurchaseUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  items         PurchaseItem[]
+  requisitionId     String?              @unique
+  requisition       PurchaseRequisition? @relation(fields: [requisitionId], references: [id], onDelete: SetNull)
+  orderedAt         DateTime?
+  receivedAt        DateTime?
+  createdBy         String?
+  createdByEmployee Employee?            @relation("PurchaseCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedBy         String?
+  updatedByEmployee Employee?            @relation("PurchaseUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  items             PurchaseItem[]
 
   @@unique([tenantId, purchaseNo])
   @@index([tenantId, status])
@@ -1255,28 +1254,28 @@ model ProductStock {
 // cash worth of the movement (|quantity| * unitCost, unitCost defaulting to
 // the product's valuation cost). Written only via recordStockMovement().
 model InventoryMovement {
-  id            String           @id @default(cuid())
+  id            String            @id @default(cuid())
   tenantId      String
   productId     String
   locationId    String
   type          StockMovementType
-  quantity      Decimal          @db.Decimal(12, 3)
-  balanceBefore Decimal?         @db.Decimal(12, 3)
-  balanceAfter  Decimal?         @db.Decimal(12, 3)
-  unitCost      Decimal?         @db.Decimal(12, 2)
-  value         Decimal?         @db.Decimal(12, 2)
+  quantity      Decimal           @db.Decimal(12, 3)
+  balanceBefore Decimal?          @db.Decimal(12, 3)
+  balanceAfter  Decimal?          @db.Decimal(12, 3)
+  unitCost      Decimal?          @db.Decimal(12, 2)
+  value         Decimal?          @db.Decimal(12, 2)
   note          String?
   // Where this movement came from — e.g. POS_ORDER, TRANSFER, GOODS_RECEIVED,
   // PRODUCT_OPENING, MANUAL — plus the id of that source row when there is one.
   sourceType    String?
   sourceRefId   String?
   performedBy   String?
-  employee      Employee?        @relation(fields: [performedBy], references: [id], onDelete: SetNull)
-  occurredAt    DateTime         @default(now())
-  createdAt     DateTime         @default(now())
-  tenant        Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  product       Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
-  location      Location         @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  employee      Employee?         @relation(fields: [performedBy], references: [id], onDelete: SetNull)
+  occurredAt    DateTime          @default(now())
+  createdAt     DateTime          @default(now())
+  tenant        Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product       Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  location      Location          @relation(fields: [locationId], references: [id], onDelete: Restrict)
 
   @@index([tenantId, occurredAt])
   @@index([tenantId, productId, occurredAt])
@@ -1304,45 +1303,45 @@ enum LocationType {
 // name is required; everything else here just makes a location easier to
 // identify and reach, not something the POS logic depends on.
 model Location {
-  id              String       @id @default(cuid())
-  tenantId        String
-  tenant          Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  name            String
-  type            LocationType
-  description     String?
-  address         String?
-  managerId       String?
-  manager         Employee?    @relation("LocationManager", fields: [managerId], references: [id], onDelete: SetNull)
-  primaryPhone    String?
-  secondaryPhone  String?
-  email           String?
+  id                    String                @id @default(cuid())
+  tenantId              String
+  tenant                Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name                  String
+  type                  LocationType
+  description           String?
+  address               String?
+  managerId             String?
+  manager               Employee?             @relation("LocationManager", fields: [managerId], references: [id], onDelete: SetNull)
+  primaryPhone          String?
+  secondaryPhone        String?
+  email                 String?
   // Stored as "HH:MM" (24h) — a daily recurring time, not a specific date.
-  openingTime     String?
-  closingTime     String?
-  isActive        Boolean      @default(true)
+  openingTime           String?
+  closingTime           String?
+  isActive              Boolean               @default(true)
   // Selling permissions — which sale categories this location's POS shows.
   // Default true across the board so every existing location keeps behaving
   // exactly as it does today until someone deliberately unchecks one.
-  canSellRooms    Boolean      @default(true)
-  canSellMenu     Boolean      @default(true)
-  canSellServices Boolean      @default(true)
-  canSellProducts Boolean      @default(true)
+  canSellRooms          Boolean               @default(true)
+  canSellMenu           Boolean               @default(true)
+  canSellServices       Boolean               @default(true)
+  canSellProducts       Boolean               @default(true)
   // When true, a FOOD-channel order at this location skips the Kitchen
   // ticket (OPEN/PREPARING/READY) entirely and is served the instant it's
   // rung up — for a bar or bakery counter where staff hand the item over on
   // the spot, not a kitchen that needs prep time tracked.
-  servesDirectly  Boolean      @default(false)
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
-  menuItems       MenuItem[]
-  employees       Employee[]   @relation("LocationStaff")
-  defaultForEmployees Employee[] @relation("EmployeeDefaultLocation")
-  orders          PosOrder[]
-  transactions    Transaction[]
-  expenses        Expense[]
-  productStocks      ProductStock[]
-  inventoryMovements InventoryMovement[]
-  services           Service[]
+  servesDirectly        Boolean               @default(false)
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  menuItems             MenuItem[]
+  employees             Employee[]            @relation("LocationStaff")
+  defaultForEmployees   Employee[]            @relation("EmployeeDefaultLocation")
+  orders                PosOrder[]
+  transactions          Transaction[]
+  expenses              Expense[]
+  productStocks         ProductStock[]
+  inventoryMovements    InventoryMovement[]
+  services              Service[]
   reservations          Reservation[]
   customers             Customer[]
   reservationActivities ReservationActivity[]
@@ -1369,13 +1368,14 @@ model MenuCategory {
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
   menuItems   MenuItem[]
+  addons      Addon[]
 
   @@unique([tenantId, name])
   @@index([tenantId, isActive, sortOrder])
 }
 
 model MenuItem {
-  id             String           @id @default(cuid())
+  id             String            @id @default(cuid())
   tenantId       String
   // Legacy link to the generic Category tree — nullable now, kept only so
   // the old Menu & Add-ons screen keeps working. menuCategoryId is the real
@@ -1389,30 +1389,28 @@ model MenuItem {
   sku            String?
   description    String?
   photoUrl       String?
-  price          Decimal          @db.Decimal(12, 2)
+  price          Decimal           @db.Decimal(12, 2)
   // Per-item tax override. All null = inherit the tenant's BusinessProfile
   // default (rate + mode + treatment). Any set value wins for that facet.
-  taxRate        Decimal?         @db.Decimal(5, 2)
+  taxRate        Decimal?          @db.Decimal(5, 2)
   taxMode        TaxMode?
   taxTreatment   TaxTreatment?
-  temperature    DrinkTemperature @default(OTHER)
-  isVegetarian   Boolean          @default(false)
+  temperature    DrinkTemperature  @default(OTHER)
+  isVegetarian   Boolean           @default(false)
   // Two separate concepts: isActive = in the menu at all; isAvailable =
   // currently sellable (e.g. temporarily sold out).
-  isActive       Boolean          @default(true)
-  isAvailable    Boolean          @default(true)
-  sortOrder      Int              @default(0)
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-  tenant         Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  category       Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  menuCategory   MenuCategory     @relation(fields: [menuCategoryId], references: [id], onDelete: Restrict)
-  product        Product?         @relation(fields: [productId], references: [id], onDelete: SetNull)
-  recipe         Recipe?          @relation(fields: [recipeId], references: [id], onDelete: SetNull)
-  orderItems      PosOrderItem[]
-  addons          Addon[]
-  variants        MenuItemVariant[]
-  addonGroupLinks MenuItemAddonGroup[]
+  isActive       Boolean           @default(true)
+  isAvailable    Boolean           @default(true)
+  sortOrder      Int               @default(0)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  tenant         Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category       Category?         @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  menuCategory   MenuCategory      @relation(fields: [menuCategoryId], references: [id], onDelete: Restrict)
+  product        Product?          @relation(fields: [productId], references: [id], onDelete: SetNull)
+  recipe         Recipe?           @relation(fields: [recipeId], references: [id], onDelete: SetNull)
+  orderItems     PosOrderItem[]
+  variants       MenuItemVariant[]
   // Empty = unallocated = sellable at every location (the default).
   locations      Location[]
 
@@ -1427,18 +1425,18 @@ model MenuItem {
 // zero or many; with none, the item's base price is used, otherwise each
 // variant carries its own price.
 model MenuItemVariant {
-  id         String   @id @default(cuid())
+  id         String         @id @default(cuid())
   tenantId   String
   menuItemId String
   name       String
   sku        String?
-  price      Decimal  @db.Decimal(12, 2)
-  isActive   Boolean  @default(true)
-  sortOrder  Int      @default(0)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  price      Decimal        @db.Decimal(12, 2)
+  isActive   Boolean        @default(true)
+  sortOrder  Int            @default(0)
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  tenant     Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  menuItem   MenuItem       @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
   orderItems PosOrderItem[]
 
   @@unique([tenantId, menuItemId, name])
@@ -1447,7 +1445,7 @@ model MenuItemVariant {
 }
 
 model PosOrder {
-  id            String         @id @default(cuid())
+  id            String          @id @default(cuid())
   tenantId      String
   reservationId String?
   // Who this order is actually for — independent of tableId (which is just
@@ -1461,17 +1459,17 @@ model PosOrder {
   orderNumber   Int
   status        PosOrderStatus  @default(OPEN)
   channel       PosOrderChannel @default(FOOD)
-  discount      Decimal        @default(0) @db.Decimal(12, 2)
+  discount      Decimal         @default(0) @db.Decimal(12, 2)
   notes         String?
   readyAt       DateTime?
   servedAt      DateTime?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  reservation   Reservation?   @relation(fields: [reservationId], references: [id], onDelete: SetNull)
-  customer      Customer?      @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  table         Table?         @relation(fields: [tableId], references: [id], onDelete: SetNull)
-  location      Location?      @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  tenant        Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  reservation   Reservation?    @relation(fields: [reservationId], references: [id], onDelete: SetNull)
+  customer      Customer?       @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  table         Table?          @relation(fields: [tableId], references: [id], onDelete: SetNull)
+  location      Location?       @relation(fields: [locationId], references: [id], onDelete: SetNull)
   items         PosOrderItem[]
   payments      Payment[]
 
@@ -1563,59 +1561,60 @@ model Payment {
 // channel (enforced at the API layer, same convention as FolioLineItem.source
 // — no DB-level CHECK constraint for it either).
 model PosOrderItem {
-  id         String              @id @default(cuid())
-  orderId    String
-  menuItemId String?
+  id           String              @id @default(cuid())
+  orderId      String
+  menuItemId   String?
   // The specific size/option chosen for this line, when the menu item has
   // variants (Pizza: Large). Null = base item, no variants. unitPrice is
   // always the price actually charged — the variant's when set, else the
   // item's base price.
-  variantId  String?
-  productId  String?
-  serviceId  String?
-  quantity   Int                 @default(1)
-  unitPrice  Decimal             @db.Decimal(12, 2)
+  variantId    String?
+  productId    String?
+  serviceId    String?
+  quantity     Int                 @default(1)
+  unitPrice    Decimal             @db.Decimal(12, 2)
   // Tax as resolved at the moment of sale — item override else the tenant
   // default. Snapshotted so a later change to either never re-taxes a
   // historical order. Null on pre-existing rows: callers fall back to the
   // current BusinessProfile.
-  taxRate      Decimal?          @db.Decimal(5, 2)
+  taxRate      Decimal?            @db.Decimal(5, 2)
   taxMode      TaxMode?
   taxTreatment TaxTreatment?
-  createdAt  DateTime            @default(now())
-  order      PosOrder            @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  menuItem   MenuItem?           @relation(fields: [menuItemId], references: [id], onDelete: Restrict)
-  variant    MenuItemVariant?    @relation(fields: [variantId], references: [id], onDelete: Restrict)
-  product    Product?            @relation(fields: [productId], references: [id], onDelete: Restrict)
-  service    Service?            @relation(fields: [serviceId], references: [id], onDelete: Restrict)
-  addons     PosOrderItemAddon[]
+  createdAt    DateTime            @default(now())
+  order        PosOrder            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItem     MenuItem?           @relation(fields: [menuItemId], references: [id], onDelete: Restrict)
+  variant      MenuItemVariant?    @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  product      Product?            @relation(fields: [productId], references: [id], onDelete: Restrict)
+  service      Service?            @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  addons       PosOrderItemAddon[]
 
   @@index([orderId])
   @@index([variantId])
 }
 
-// A reusable add-on (Cheddar, Bacon, Extra Espresso). Independent of any one
-// menu item — the same record is shared across many add-on groups (Phase 6),
-// which are in turn attached to menu items (Phase 7). The legacy direct
-// `menuItems` M2M is kept only so the old Menu & Add-ons screen keeps working.
+// A single add-on (Cheddar, Bacon, Extra Espresso). A flat, tenant-wide
+// catalog scoped only by an optional menu category — the POS add-on picker
+// filters on it (defaulting to the menu item's own category), otherwise
+// shows everything. No per-item links, no groups, no selection rules.
 model Addon {
-  id          String              @id @default(cuid())
-  tenantId    String
-  name        String
-  description String?
-  price       Decimal             @db.Decimal(12, 2)
-  sku         String?
-  imageUrl    String?
-  isActive    Boolean             @default(true)
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
-  tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  orderItems  PosOrderItemAddon[]
-  menuItems   MenuItem[]
-  groupLinks  AddonGroupItem[]
+  id             String              @id @default(cuid())
+  tenantId       String
+  menuCategoryId String?
+  name           String
+  description    String?
+  price          Decimal             @db.Decimal(12, 2)
+  sku            String?
+  imageUrl       String?
+  isActive       Boolean             @default(true)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  tenant         Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  menuCategory   MenuCategory?       @relation(fields: [menuCategoryId], references: [id], onDelete: SetNull)
+  orderItems     PosOrderItemAddon[]
 
   @@unique([tenantId, name])
   @@unique([tenantId, sku])
+  @@index([tenantId, menuCategoryId])
 }
 
 model PosOrderItemAddon {
@@ -1629,77 +1628,6 @@ model PosOrderItemAddon {
   addon       Addon        @relation(fields: [addonId], references: [id], onDelete: Restrict)
 
   @@index([orderItemId])
-}
-
-enum AddonSelectionType {
-  SINGLE
-  MULTIPLE
-}
-
-// A reusable rule-set for choosing add-ons — "Choose Cheese" (pick exactly
-// one), "Extras" (pick up to five). Holds no add-ons itself; those attach
-// via AddonGroupItem (Phase 6). Groups attach to menu items via
-// MenuItemAddonGroup (Phase 7).
-model AddonGroup {
-  id            String             @id @default(cuid())
-  tenantId      String
-  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  name          String
-  description   String?
-  selectionType AddonSelectionType @default(SINGLE)
-  minSelections Int                @default(0)
-  maxSelections Int                @default(1)
-  required      Boolean            @default(false)
-  isActive      Boolean            @default(true)
-  sortOrder     Int                @default(0)
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
-  items         AddonGroupItem[]
-  menuItemLinks MenuItemAddonGroup[]
-
-  @@unique([tenantId, name])
-  @@index([tenantId, isActive, sortOrder])
-}
-
-// M2M between MenuItem and AddonGroup, with per-item ordering. One item can
-// use many groups ("Choose Cheese", "Extras"); one group is reused by many
-// items. (menuItemId, addonGroupId) unique so a group can't be attached
-// to the same item twice.
-model MenuItemAddonGroup {
-  id           String     @id @default(cuid())
-  tenantId     String
-  menuItemId   String
-  addonGroupId String
-  sortOrder    Int        @default(0)
-  isActive     Boolean    @default(true)
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
-  tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  menuItem     MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
-  addonGroup   AddonGroup @relation(fields: [addonGroupId], references: [id], onDelete: Cascade)
-
-  @@unique([menuItemId, addonGroupId])
-  @@index([tenantId, menuItemId, sortOrder])
-}
-
-// M2M between AddonGroup and Addon, with per-group ordering. A group has
-// many add-ons; an add-on lives in many groups. (addonGroupId, addonId)
-// is unique so the same add-on can't be added to one group twice.
-model AddonGroupItem {
-  id           String     @id @default(cuid())
-  tenantId     String
-  addonGroupId String
-  addonId      String
-  sortOrder    Int        @default(0)
-  isActive     Boolean    @default(true)
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
-  tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  addonGroup   AddonGroup @relation(fields: [addonGroupId], references: [id], onDelete: Cascade)
-  addon        Addon      @relation(fields: [addonId], references: [id], onDelete: Cascade)
-
-  @@unique([addonGroupId, addonId])
-  @@index([tenantId, addonGroupId, sortOrder])
 }
 
 // A recipe is how a chef makes a dish: ordered prep steps, an estimated
@@ -1791,61 +1719,61 @@ model Employee {
   address          String?
 
   // Employment
-  departmentId        String
-  department          Department         @relation(fields: [departmentId], references: [id], onDelete: Restrict)
-  jobTitle            String
-  employmentType      EmploymentType     @default(FULL_TIME)
-  status              EmployeeStatus     @default(ACTIVE)
-  dateHired           DateTime
-  supervisorId        String?
-  supervisor          Employee?          @relation("EmployeeSupervisor", fields: [supervisorId], references: [id], onDelete: SetNull)
-  reports             Employee[]         @relation("EmployeeSupervisor")
-  roleId              String?
-  role                Role?              @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  departmentId             String
+  department               Department            @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  jobTitle                 String
+  employmentType           EmploymentType        @default(FULL_TIME)
+  status                   EmployeeStatus        @default(ACTIVE)
+  dateHired                DateTime
+  supervisorId             String?
+  supervisor               Employee?             @relation("EmployeeSupervisor", fields: [supervisorId], references: [id], onDelete: SetNull)
+  reports                  Employee[]            @relation("EmployeeSupervisor")
+  roleId                   String?
+  role                     Role?                 @relation(fields: [roleId], references: [id], onDelete: SetNull)
   // Selling/working locations this employee is pinned to. Empty = no
   // restriction (can work at any location; the POS asks which each time);
   // one or more restricts them to that set.
-  locations           Location[]         @relation("LocationStaff")
+  locations                Location[]            @relation("LocationStaff")
   // The location the POS pre-selects for this employee — one of `locations`,
   // or null. A single-location employee's is locked to it; a multi-location
   // one starts here and can switch on the fly (which updates this).
-  defaultLocationId   String?
-  defaultLocation     Location?          @relation("EmployeeDefaultLocation", fields: [defaultLocationId], references: [id], onDelete: SetNull)
-  managedLocations    Location[]         @relation("LocationManager")
-  sessions            Session[]
-  createdReservations Reservation[] @relation("ReservationCreatedBy")
-  updatedReservations Reservation[] @relation("ReservationUpdatedBy")
-  reservationActivities ReservationActivity[]
-  addedReservationGuests ReservationGuest[]
-  transactions        Transaction[]
-  expenses            Expense[]
-  foundLostItems      LostFoundItem[] @relation("LostFoundFoundBy")
-  collectedLostItems  LostFoundItem[] @relation("LostFoundCollectedBy")
-  createdCustomers    Customer[] @relation("CustomerCreatedBy")
-  updatedCustomers    Customer[] @relation("CustomerUpdatedBy")
-  createdRooms        Room[] @relation("RoomCreatedBy")
-  updatedRooms        Room[] @relation("RoomUpdatedBy")
-  createdRoomTypes    RoomType[] @relation("RoomTypeCreatedBy")
-  updatedRoomTypes    RoomType[] @relation("RoomTypeUpdatedBy")
-  createdRoomRates    RoomRate[] @relation("RoomRateCreatedBy")
-  updatedRoomRates    RoomRate[] @relation("RoomRateUpdatedBy")
-  createdHousekeepingTasks HousekeepingTask[] @relation("HousekeepingTaskCreatedBy")
-  updatedHousekeepingTasks HousekeepingTask[] @relation("HousekeepingTaskUpdatedBy")
-  createdAssets       Asset[] @relation("AssetCreatedBy")
-  updatedAssets       Asset[] @relation("AssetUpdatedBy")
-  assetMovements      AssetMovement[]
-  createdSuppliers    Supplier[] @relation("SupplierCreatedBy")
-  updatedSuppliers    Supplier[] @relation("SupplierUpdatedBy")
-  createdPurchases    Purchase[] @relation("PurchaseCreatedBy")
-  updatedPurchases    Purchase[] @relation("PurchaseUpdatedBy")
-  createdRequisitions PurchaseRequisition[] @relation("RequisitionCreatedBy")
-  updatedRequisitions PurchaseRequisition[] @relation("RequisitionUpdatedBy")
-  reviewedRequisitions PurchaseRequisition[] @relation("RequisitionReviewedBy")
-  inventoryMovements  InventoryMovement[]
+  defaultLocationId        String?
+  defaultLocation          Location?             @relation("EmployeeDefaultLocation", fields: [defaultLocationId], references: [id], onDelete: SetNull)
+  managedLocations         Location[]            @relation("LocationManager")
+  sessions                 Session[]
+  createdReservations      Reservation[]         @relation("ReservationCreatedBy")
+  updatedReservations      Reservation[]         @relation("ReservationUpdatedBy")
+  reservationActivities    ReservationActivity[]
+  addedReservationGuests   ReservationGuest[]
+  transactions             Transaction[]
+  expenses                 Expense[]
+  foundLostItems           LostFoundItem[]       @relation("LostFoundFoundBy")
+  collectedLostItems       LostFoundItem[]       @relation("LostFoundCollectedBy")
+  createdCustomers         Customer[]            @relation("CustomerCreatedBy")
+  updatedCustomers         Customer[]            @relation("CustomerUpdatedBy")
+  createdRooms             Room[]                @relation("RoomCreatedBy")
+  updatedRooms             Room[]                @relation("RoomUpdatedBy")
+  createdRoomTypes         RoomType[]            @relation("RoomTypeCreatedBy")
+  updatedRoomTypes         RoomType[]            @relation("RoomTypeUpdatedBy")
+  createdRoomRates         RoomRate[]            @relation("RoomRateCreatedBy")
+  updatedRoomRates         RoomRate[]            @relation("RoomRateUpdatedBy")
+  createdHousekeepingTasks HousekeepingTask[]    @relation("HousekeepingTaskCreatedBy")
+  updatedHousekeepingTasks HousekeepingTask[]    @relation("HousekeepingTaskUpdatedBy")
+  createdAssets            Asset[]               @relation("AssetCreatedBy")
+  updatedAssets            Asset[]               @relation("AssetUpdatedBy")
+  assetMovements           AssetMovement[]
+  createdSuppliers         Supplier[]            @relation("SupplierCreatedBy")
+  updatedSuppliers         Supplier[]            @relation("SupplierUpdatedBy")
+  createdPurchases         Purchase[]            @relation("PurchaseCreatedBy")
+  updatedPurchases         Purchase[]            @relation("PurchaseUpdatedBy")
+  createdRequisitions      PurchaseRequisition[] @relation("RequisitionCreatedBy")
+  updatedRequisitions      PurchaseRequisition[] @relation("RequisitionUpdatedBy")
+  reviewedRequisitions     PurchaseRequisition[] @relation("RequisitionReviewedBy")
+  inventoryMovements       InventoryMovement[]
 
   // Compensation
-  salaryType        SalaryType    @default(MONTHLY)
-  salaryAmount      Decimal       @db.Decimal(12, 2)
+  salaryType        SalaryType            @default(MONTHLY)
+  salaryAmount      Decimal               @db.Decimal(12, 2)
   paymentMethod     EmployeePaymentMethod @default(BANK_TRANSFER)
   bankName          String?
   bankAccountNumber String?
@@ -1979,118 +1907,131 @@ model PlatformSession {
 }
 
 model ServiceCenterService {
-  id String @id @default(cuid())
-  tenantId String
-  name String
-  description String?
+  id              String        @id @default(cuid())
+  tenantId        String
+  name            String
+  description     String?
   durationMinutes Int
-  price Decimal @db.Decimal(12, 2)
-  isActive Boolean @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  appointments Appointment[]
+  price           Decimal       @db.Decimal(12, 2)
+  isActive        Boolean       @default(true)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointments    Appointment[]
+
   @@unique([tenantId, name])
   @@index([tenantId, isActive])
 }
+
 model ServiceProvider {
-  id String @id @default(cuid())
-  tenantId String
-  name String
-  specialty String?
-  phone String?
-  isActive Boolean @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  schedules ProviderSchedule[]
+  id           String             @id @default(cuid())
+  tenantId     String
+  name         String
+  specialty    String?
+  phone        String?
+  isActive     Boolean            @default(true)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  tenant       Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  schedules    ProviderSchedule[]
   appointments Appointment[]
+
   @@index([tenantId, isActive])
 }
+
 model ProviderSchedule {
-  id String @id @default(cuid())
-  tenantId String
-  providerId String
-  startsAt DateTime
-  endsAt DateTime
-  isAvailable Boolean @default(true)
-  notes String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  provider ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  id          String          @id @default(cuid())
+  tenantId    String
+  providerId  String
+  startsAt    DateTime
+  endsAt      DateTime
+  isAvailable Boolean         @default(true)
+  notes       String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  tenant      Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  provider    ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
   @@index([tenantId, providerId, startsAt])
 }
+
 model MembershipPlan {
-  id String @id @default(cuid())
-  tenantId String
-  name String
-  description String?
-  price Decimal @db.Decimal(12, 2)
-  durationDays Int
-  discountPercent Decimal @default(0) @db.Decimal(5, 2)
-  isActive Boolean @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  memberships Membership[]
+  id              String       @id @default(cuid())
+  tenantId        String
+  name            String
+  description     String?
+  price           Decimal      @db.Decimal(12, 2)
+  durationDays    Int
+  discountPercent Decimal      @default(0) @db.Decimal(5, 2)
+  isActive        Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  tenant          Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  memberships     Membership[]
+
   @@unique([tenantId, name])
 }
+
 model Membership {
-  id String @id @default(cuid())
-  tenantId String
-  customerId String
-  planId String
-  startsAt DateTime
-  endsAt DateTime
-  status MembershipStatus @default(ACTIVE)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  plan MembershipPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
-  payments MembershipPayment[]
+  id           String              @id @default(cuid())
+  tenantId     String
+  customerId   String
+  planId       String
+  startsAt     DateTime
+  endsAt       DateTime
+  status       MembershipStatus    @default(ACTIVE)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  tenant       Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer     Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  plan         MembershipPlan      @relation(fields: [planId], references: [id], onDelete: Restrict)
+  payments     MembershipPayment[]
   appointments Appointment[]
+
   @@index([tenantId, customerId, status])
 }
+
 model MembershipPayment {
-  id String @id @default(cuid())
-  tenantId String
-  membershipId String
+  id              String        @id @default(cuid())
+  tenantId        String
+  membershipId    String
   paymentMethodId String
-  amount Decimal @db.Decimal(12, 2)
-  status PaymentStatus @default(PAID)
-  reference String?
-  paidAt DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
-  paymentMethod PaymentMethod @relation(fields: [paymentMethodId], references: [id], onDelete: Restrict)
+  amount          Decimal       @db.Decimal(12, 2)
+  status          PaymentStatus @default(PAID)
+  reference       String?
+  paidAt          DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  membership      Membership    @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  paymentMethod   PaymentMethod @relation(fields: [paymentMethodId], references: [id], onDelete: Restrict)
+
   @@index([tenantId, membershipId, createdAt])
 }
+
 model Appointment {
-  id String @id @default(cuid())
-  tenantId String
-  customerId String
-  serviceId String
-  providerId String
-  membershipId String?
+  id              String               @id @default(cuid())
+  tenantId        String
+  customerId      String
+  serviceId       String
+  providerId      String
+  membershipId    String?
   paymentMethodId String?
-  startsAt DateTime
-  endsAt DateTime
-  status AppointmentStatus @default(BOOKED)
-  amount Decimal @db.Decimal(12, 2)
-  paymentStatus PaymentStatus @default(PENDING)
-  notes String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  service ServiceCenterService @relation(fields: [serviceId], references: [id], onDelete: Restrict)
-  provider ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Restrict)
-  membership Membership? @relation(fields: [membershipId], references: [id], onDelete: SetNull)
-  paymentMethod PaymentMethod? @relation(fields: [paymentMethodId], references: [id], onDelete: SetNull)
+  startsAt        DateTime
+  endsAt          DateTime
+  status          AppointmentStatus    @default(BOOKED)
+  amount          Decimal              @db.Decimal(12, 2)
+  paymentStatus   PaymentStatus        @default(PENDING)
+  notes           String?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  tenant          Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer        Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  service         ServiceCenterService @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  provider        ServiceProvider      @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  membership      Membership?          @relation(fields: [membershipId], references: [id], onDelete: SetNull)
+  paymentMethod   PaymentMethod?       @relation(fields: [paymentMethodId], references: [id], onDelete: SetNull)
+
   @@index([tenantId, startsAt, status])
   @@index([tenantId, providerId, startsAt])
 }
