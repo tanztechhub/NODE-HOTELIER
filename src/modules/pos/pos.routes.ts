@@ -193,7 +193,7 @@ const orderInclude = {
   payments: { include: { paymentMethod: { select: { id: true, name: true, requiresReference: true } } } },
   table: true,
   location: true,
-  customer: { select: { id: true, firstName: true, lastName: true, phone: true } },
+  customer: { select: { id: true, firstName: true, lastName: true, phone: true, balance: true } },
   reservation: { select: { id: true, reservationNo: true, customerId: true, customer: { select: { firstName: true, lastName: true } }, room: { select: { number: true } } } },
 } as const;
 
@@ -277,6 +277,63 @@ function withFinancials<T extends FinancialOrder>(order: T, tax: Awaited<ReturnT
 async function releaseTableIfIdle(tx: Prisma.TransactionClient, tableId: string) {
   const stillActive = await tx.posOrder.findFirst({ where: { tableId, status: { in: ["OPEN", "PREPARING", "READY", "SERVED"] } } });
   if (!stillActive) await tx.table.updateMany({ where: { id: tableId }, data: { status: "AVAILABLE" } });
+}
+
+const money2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+/** UNPAID / PARTIAL / PAID from what's been paid against the order total. */
+function paymentStatusFor(paid: number, total: number): "UNPAID" | "PARTIAL" | "PAID" {
+  if (paid >= total - 0.01) return "PAID";
+  return paid > 0.01 ? "PARTIAL" : "UNPAID";
+}
+
+/** What a completed order still owes — its contribution to the customer's
+ * balance. Zero for anything not completed, or already covered. */
+function orderOutstanding(status: string, paid: number, total: number): number {
+  return status === "COMPLETED" ? Math.max(0, money2(total - paid)) : 0;
+}
+
+/** Moves a customer's balance by a signed delta and writes the matching
+ * ledger row with the running balance after. No-op for a zero delta. */
+async function applyCustomerBalance(
+  tx: Prisma.TransactionClient,
+  args: { tenantId: string; customerId: string; orderId: string | null; delta: number; type: "CREDIT" | "REPAYMENT" | "ADJUSTMENT"; note?: string | null; by?: string | null },
+) {
+  const delta = money2(args.delta);
+  if (delta === 0) return;
+  const c = await tx.customer.update({ where: { id: args.customerId }, data: { balance: { increment: delta } }, select: { balance: true } });
+  await tx.customerCreditEntry.create({
+    data: {
+      tenantId: args.tenantId, customerId: args.customerId, orderId: args.orderId ?? undefined,
+      type: args.type, amount: delta, balanceAfter: c.balance, note: args.note ?? undefined, createdBy: args.by ?? undefined,
+    },
+  });
+}
+
+/** Keeps the customer's balance in step with what one order still owes.
+ * Idempotent: compares the order's current outstanding against what it has
+ * already pushed onto the balance (its own ledger rows) and moves the
+ * balance by the difference. Call inside the tx after any change to an
+ * order's paid amount or status; `paid`/`total` are the post-change values. */
+async function reconcileOrderCredit(
+  tx: Prisma.TransactionClient,
+  args: { tenantId: string; orderId: string; orderNumber: number; customerId: string | null; status: string; paid: number; total: number; by?: string | null },
+) {
+  if (!args.customerId) return;
+  const desired = orderOutstanding(args.status, args.paid, args.total);
+  const prior = await tx.customerCreditEntry.aggregate({
+    where: { orderId: args.orderId, type: { in: ["CREDIT", "REPAYMENT"] } },
+    _sum: { amount: true },
+  });
+  const recorded = money2(Number(prior._sum.amount ?? 0));
+  const delta = money2(desired - recorded);
+  if (delta === 0) return;
+  await applyCustomerBalance(tx, {
+    tenantId: args.tenantId, customerId: args.customerId, orderId: args.orderId, delta,
+    type: delta > 0 ? "CREDIT" : "REPAYMENT",
+    note: delta > 0 ? `Order #${args.orderNumber} completed on credit` : `Repayment against order #${args.orderNumber}`,
+    by: args.by,
+  });
 }
 
 // A fixed-location employee only ever sees their own location's orders; a
@@ -793,11 +850,13 @@ posRouter.post("/orders/:id/payments", async (req, res) => {
     taxSettingsFor(tid),
   ]);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
-  if (order.status !== "SERVED") { res.status(409).json({ error: "The order must be served before it can be paid" }); return; }
+  const payable = order.status === "SERVED" || (order.status === "COMPLETED" && order.paymentStatus !== "PAID");
+  if (!payable) { res.status(409).json({ error: order.status === "COMPLETED" ? "This order is already fully paid" : "The order must be served before it can be paid" }); return; }
   const { total } = computeOrderFinancials(order, tax);
   const alreadyPaid = order.payments.reduce((s, p) => s + Number(p.amount), 0);
   const remaining = Math.round((total - alreadyPaid) * 100) / 100;
   if (parsed.data.amount > remaining + 0.01) { res.status(400).json({ error: `Amount exceeds the remaining balance of ${remaining.toFixed(2)}` }); return; }
+  const custId = order.customerId ?? order.reservation?.customerId ?? null;
 
   try {
     let updatedOrder;
@@ -811,10 +870,10 @@ posRouter.post("/orders/:id/payments", async (req, res) => {
         await chargeOrderToFolio(tx, tid, reservation!.folio!.id, order, data.amount, req);
         await tx.posOrder.update({ where: { id: order.id }, data: { reservationId: order.reservationId ?? reservation!.id, customerId: order.customerId ?? reservation!.customerId } });
         const paidSoFar = alreadyPaid + data.amount;
-        if (paidSoFar >= total - 0.01) {
-          await tx.posOrder.update({ where: { id: order.id }, data: { status: "COMPLETED" } });
-          if (order.tableId) await releaseTableIfIdle(tx, order.tableId);
-        }
+        const newStatus = order.status === "SERVED" && paidSoFar >= total - 0.01 ? "COMPLETED" : order.status;
+        await tx.posOrder.update({ where: { id: order.id }, data: { status: newStatus, paymentStatus: paymentStatusFor(paidSoFar, total) } });
+        if (newStatus === "COMPLETED" && order.status === "SERVED" && order.tableId) await releaseTableIfIdle(tx, order.tableId);
+        await reconcileOrderCredit(tx, { tenantId: tid, orderId: order.id, orderNumber: order.orderNumber, customerId: order.customerId ?? reservation!.customerId ?? null, status: newStatus, paid: paidSoFar, total, by: req.userId });
         return tx.posOrder.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
       });
     } else {
@@ -839,10 +898,10 @@ posRouter.post("/orders/:id/payments", async (req, res) => {
           },
         });
         const paidSoFar = alreadyPaid + data.amount;
-        if (paidSoFar >= total - 0.01) {
-          await tx.posOrder.update({ where: { id: order.id }, data: { status: "COMPLETED" } });
-          if (order.tableId) await releaseTableIfIdle(tx, order.tableId);
-        }
+        const newStatus = order.status === "SERVED" && paidSoFar >= total - 0.01 ? "COMPLETED" : order.status;
+        await tx.posOrder.update({ where: { id: order.id }, data: { status: newStatus, paymentStatus: paymentStatusFor(paidSoFar, total) } });
+        if (newStatus === "COMPLETED" && order.status === "SERVED" && order.tableId) await releaseTableIfIdle(tx, order.tableId);
+        await reconcileOrderCredit(tx, { tenantId: tid, orderId: order.id, orderNumber: order.orderNumber, customerId: custId, status: newStatus, paid: paidSoFar, total, by: req.userId });
         return tx.posOrder.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
       });
     }
@@ -851,6 +910,57 @@ posRouter.post("/orders/:id/payments", async (req, res) => {
     if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
     throw error;
   }
+});
+
+/** Completes a served order for whatever's been paid — the rest goes onto
+ * the customer's balance as credit. Needs a customer attached once anything
+ * is left owing. Idempotent-ish: on an already-full order it just marks it
+ * COMPLETED / PAID. */
+posRouter.post("/orders/:id/settle", async (req, res) => {
+  const id = req.params.id as string;
+  const tid = tenantIdFor(req);
+  const [order, tax] = await Promise.all([
+    prisma.posOrder.findFirst({ where: { id, tenantId: tid }, include: orderInclude }),
+    taxSettingsFor(tid),
+  ]);
+  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
+  if (order.status !== "SERVED") { res.status(409).json({ error: "Only a served order can be completed" }); return; }
+  const { total } = computeOrderFinancials(order, tax);
+  const paid = order.payments.reduce((s, p) => s + Number(p.amount), 0);
+  const shortfall = money2(total - paid);
+  if (shortfall > 0.01 && !order.customerId) {
+    res.status(400).json({ error: "Attach a customer before completing this order on credit" });
+    return;
+  }
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.posOrder.update({ where: { id: order.id }, data: { status: "COMPLETED", paymentStatus: paymentStatusFor(paid, total) } });
+    if (order.tableId) await releaseTableIfIdle(tx, order.tableId);
+    await reconcileOrderCredit(tx, { tenantId: tid, orderId: order.id, orderNumber: order.orderNumber, customerId: order.customerId, status: "COMPLETED", paid, total, by: req.userId });
+    return tx.posOrder.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
+  });
+  res.status(200).json({ order: withFinancials(updated, tax) });
+});
+
+/** Attaches (or changes) the customer a POS order is for — used at
+ * settlement when a walk-in turns out to need credit. Blocked once the
+ * order has recorded credit against a different customer. */
+posRouter.post("/orders/:id/customer", async (req, res) => {
+  const id = req.params.id as string;
+  const parsed = z.object({ customerId: z.string().trim().min(1) }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Choose a customer" }); return; }
+  const tid = tenantIdFor(req);
+  const order = await prisma.posOrder.findFirst({ where: { id, tenantId: tid }, include: orderInclude });
+  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
+  if (["CANCELLED", "PENDING_CANCELLATION"].includes(order.status)) { res.status(409).json({ error: "This order can't be changed" }); return; }
+  const customer = await prisma.customer.findFirst({ where: { id: parsed.data.customerId, tenantId: tid }, select: { id: true } });
+  if (!customer) { res.status(400).json({ error: "Choose a customer from this property" }); return; }
+  if (order.customerId && order.customerId !== customer.id) {
+    const credited = await prisma.customerCreditEntry.count({ where: { orderId: order.id } });
+    if (credited > 0) { res.status(409).json({ error: "This order already has credit recorded against a customer" }); return; }
+  }
+  const updated = await prisma.posOrder.update({ where: { id: order.id }, data: { customerId: customer.id }, include: orderInclude });
+  const tax = await taxSettingsFor(tid);
+  res.status(200).json({ order: withFinancials(updated, tax) });
 });
 
 posRouter.get("/orders/:id", async (req, res) => {

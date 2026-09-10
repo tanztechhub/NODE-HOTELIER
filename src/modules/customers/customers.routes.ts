@@ -118,6 +118,33 @@ customersRouter.get("/:id", async (req, res) => {
   res.json({ customer });
 });
 
+/** The customer's credit statement: every balance movement newest-first,
+ * plus their current balance and how many times / how much they've taken on
+ * credit. */
+customersRouter.get("/:id/credit-entries", async (req, res) => {
+  const tid = tenantId(req);
+  const customer = await prisma.customer.findFirst({ where: { id: req.params.id, tenantId: tid }, select: { id: true, balance: true } });
+  if (!customer) { res.status(404).json({ error: "Customer not found" }); return; }
+  const [entries, credits] = await Promise.all([
+    prisma.customerCreditEntry.findMany({
+      where: { tenantId: tid, customerId: customer.id },
+      orderBy: { createdAt: "desc" },
+      include: { order: { select: { orderNumber: true } } },
+    }),
+    prisma.customerCreditEntry.aggregate({
+      where: { tenantId: tid, customerId: customer.id, type: "CREDIT" },
+      _sum: { amount: true },
+      _count: true,
+    }),
+  ]);
+  res.json({
+    balance: customer.balance,
+    entries,
+    creditCount: credits._count,
+    totalCreditTaken: credits._sum.amount ?? 0,
+  });
+});
+
 customersRouter.post("/", async (req, res, next) => {
   const data = createSchema.safeParse(req.body);
   if (!data.success) { res.status(400).json({ error: "Invalid customer", details: data.error.flatten() }); return; }
