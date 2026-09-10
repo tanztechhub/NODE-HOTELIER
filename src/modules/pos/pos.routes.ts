@@ -110,6 +110,10 @@ async function resolveMenuLines(tid: string, lines: OrderLineInput[], taxDefault
       throw Object.assign(new Error(`Choose an option for ${item.name}`), { status: 400 });
     }
 
+    if (line.addons.length > 0 && !item.allowsAddons) {
+      throw Object.assign(new Error(`${item.name} doesn't take add-ons`), { status: 400 });
+    }
+
     return {
       menuItemId: line.menuItemId,
       variantId,

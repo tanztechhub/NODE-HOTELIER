@@ -1397,6 +1397,10 @@ model MenuItem {
   taxTreatment   TaxTreatment?
   temperature    DrinkTemperature  @default(OTHER)
   isVegetarian   Boolean           @default(false)
+  // When false the POS adds this item straight to the order — no add-on
+  // prompt. Turn on only for items that genuinely take extras (a burger,
+  // not a latte). Variants still prompt regardless.
+  allowsAddons   Boolean           @default(false)
   // Two separate concepts: isActive = in the menu at all; isAvailable =
   // currently sellable (e.g. temporarily sold out).
   isActive       Boolean           @default(true)
