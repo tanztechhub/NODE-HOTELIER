@@ -256,6 +256,7 @@ model Tenant {
   menuItemVariants   MenuItemVariant[]
   addonGroups        AddonGroup[]
   addonGroupItems    AddonGroupItem[]
+  menuItemAddonGroups MenuItemAddonGroup[]
   recipes            Recipe[]
   tables             Table[]
   payments           Payment[]
@@ -1394,9 +1395,10 @@ model MenuItem {
   menuCategory   MenuCategory     @relation(fields: [menuCategoryId], references: [id], onDelete: Restrict)
   product        Product?         @relation(fields: [productId], references: [id], onDelete: SetNull)
   recipe         Recipe?          @relation(fields: [recipeId], references: [id], onDelete: SetNull)
-  orderItems     PosOrderItem[]
-  addons         Addon[]
-  variants       MenuItemVariant[]
+  orderItems      PosOrderItem[]
+  addons          Addon[]
+  variants        MenuItemVariant[]
+  addonGroupLinks MenuItemAddonGroup[]
   // Empty = unallocated = sellable at every location (the default).
   locations      Location[]
 
@@ -1624,9 +1626,31 @@ model AddonGroup {
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
   items         AddonGroupItem[]
+  menuItemLinks MenuItemAddonGroup[]
 
   @@unique([tenantId, name])
   @@index([tenantId, isActive, sortOrder])
+}
+
+// M2M between MenuItem and AddonGroup, with per-item ordering. One item can
+// use many groups ("Choose Cheese", "Extras"); one group is reused by many
+// items. (menuItemId, addonGroupId) unique so a group can't be attached
+// to the same item twice.
+model MenuItemAddonGroup {
+  id           String     @id @default(cuid())
+  tenantId     String
+  menuItemId   String
+  addonGroupId String
+  sortOrder    Int        @default(0)
+  isActive     Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  menuItem     MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  addonGroup   AddonGroup @relation(fields: [addonGroupId], references: [id], onDelete: Cascade)
+
+  @@unique([menuItemId, addonGroupId])
+  @@index([tenantId, menuItemId, sortOrder])
 }
 
 // M2M between AddonGroup and Addon, with per-group ordering. A group has

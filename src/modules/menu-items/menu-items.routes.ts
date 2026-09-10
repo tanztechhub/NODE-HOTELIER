@@ -60,7 +60,7 @@ const itemFields = {
   sortOrder: true,
   createdAt: true,
   updatedAt: true,
-  _count: { select: { orderItems: true, variants: true } },
+  _count: { select: { orderItems: true, variants: true, addonGroupLinks: true } },
 } as const;
 
 const variantFields = {
@@ -293,6 +293,107 @@ menuItemsRouter.delete("/:menuItemId/variants/:id", async (req, res, next) => {
   try {
     const deleted = await prisma.menuItemVariant.deleteMany({ where: { id: req.params.id, tenantId: tenantId(req), menuItemId: req.params.menuItemId } });
     if (!deleted.count) { res.status(404).json({ error: "Variant not found" }); return; }
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── Add-on groups on an item (Phase 7) ──────────────────────────────────
+// Attach reusable AddonGroups to a menu item. One item → many groups; one
+// group reused by many items.
+
+const linkGroupSchema = z.object({ addonGroupId: z.string().trim().min(1), sortOrder: z.coerce.number().int().min(0).max(99999).optional() });
+const patchLinkSchema = z.object({ isActive: z.boolean() });
+const linkReorderSchema = z.object({ orderedIds: z.array(z.string().trim().min(1)).min(1) });
+
+const itemGroupFields = Prisma.validator<Prisma.MenuItemAddonGroupSelect>()({
+  id: true,
+  menuItemId: true,
+  addonGroupId: true,
+  sortOrder: true,
+  isActive: true,
+  addonGroup: {
+    select: {
+      id: true, name: true, description: true, selectionType: true,
+      minSelections: true, maxSelections: true, required: true, isActive: true,
+      items: {
+        where: { isActive: true },
+        orderBy: [{ sortOrder: "asc" }, { addon: { name: "asc" } }],
+        select: { id: true, sortOrder: true, addon: { select: { id: true, name: true, price: true, isActive: true } } },
+      },
+    },
+  },
+});
+const itemGroupOrderBy: Prisma.MenuItemAddonGroupOrderByWithRelationInput[] = [{ sortOrder: "asc" }, { addonGroup: { name: "asc" } }];
+
+menuItemsRouter.get("/:menuItemId/addon-groups", async (req, res, next) => {
+  try {
+    const tid = tenantId(req);
+    await assertMenuItem(tid, req.params.menuItemId);
+    const links = await prisma.menuItemAddonGroup.findMany({ where: { tenantId: tid, menuItemId: req.params.menuItemId }, select: itemGroupFields, orderBy: itemGroupOrderBy });
+    res.json({ links });
+  } catch (error) {
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
+    next(error);
+  }
+});
+
+menuItemsRouter.post("/:menuItemId/addon-groups", async (req, res, next) => {
+  const data = linkGroupSchema.safeParse(req.body);
+  if (!data.success) { res.status(400).json({ error: "Invalid request", details: data.error.flatten() }); return; }
+  const tid = tenantId(req);
+  try {
+    await assertMenuItem(tid, req.params.menuItemId);
+    const group = await prisma.addonGroup.findFirst({ where: { id: data.data.addonGroupId, tenantId: tid }, select: { id: true } });
+    if (!group) { res.status(400).json({ error: "Choose an add-on group from this property" }); return; }
+    let { sortOrder } = data.data;
+    if (sortOrder === undefined) {
+      const last = await prisma.menuItemAddonGroup.findFirst({ where: { tenantId: tid, menuItemId: req.params.menuItemId }, orderBy: { sortOrder: "desc" }, select: { sortOrder: true } });
+      sortOrder = (last?.sortOrder ?? -1) + 1;
+    }
+    const link = await prisma.menuItemAddonGroup.create({ data: { tenantId: tid, menuItemId: req.params.menuItemId, addonGroupId: data.data.addonGroupId, sortOrder }, select: itemGroupFields });
+    res.status(201).json({ link });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") { res.status(409).json({ error: "That group is already on this item" }); return; }
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
+    next(error);
+  }
+});
+
+menuItemsRouter.patch("/:menuItemId/addon-groups/:id", async (req, res, next) => {
+  const data = patchLinkSchema.safeParse(req.body);
+  if (!data.success) { res.status(400).json({ error: "Invalid request", details: data.error.flatten() }); return; }
+  const tid = tenantId(req);
+  try {
+    const updated = await prisma.menuItemAddonGroup.updateMany({ where: { id: req.params.id, tenantId: tid, menuItemId: req.params.menuItemId }, data: data.data });
+    if (!updated.count) { res.status(404).json({ error: "Not on this item" }); return; }
+    const link = await prisma.menuItemAddonGroup.findUniqueOrThrow({ where: { id: req.params.id }, select: itemGroupFields });
+    res.json({ link });
+  } catch (error) {
+    next(error);
+  }
+});
+
+menuItemsRouter.post("/:menuItemId/addon-groups/reorder", async (req, res, next) => {
+  const data = linkReorderSchema.safeParse(req.body);
+  if (!data.success) { res.status(400).json({ error: "Invalid order", details: data.error.flatten() }); return; }
+  const tid = tenantId(req);
+  try {
+    const owned = await prisma.menuItemAddonGroup.count({ where: { id: { in: data.data.orderedIds }, tenantId: tid, menuItemId: req.params.menuItemId } });
+    if (owned !== new Set(data.data.orderedIds).size) { res.status(400).json({ error: "Every entry must belong to this item" }); return; }
+    await prisma.$transaction(data.data.orderedIds.map((id, index) => prisma.menuItemAddonGroup.update({ where: { id }, data: { sortOrder: index } })));
+    const links = await prisma.menuItemAddonGroup.findMany({ where: { tenantId: tid, menuItemId: req.params.menuItemId }, select: itemGroupFields, orderBy: itemGroupOrderBy });
+    res.json({ links });
+  } catch (error) {
+    next(error);
+  }
+});
+
+menuItemsRouter.delete("/:menuItemId/addon-groups/:id", async (req, res, next) => {
+  try {
+    const deleted = await prisma.menuItemAddonGroup.deleteMany({ where: { id: req.params.id, tenantId: tenantId(req), menuItemId: req.params.menuItemId } });
+    if (!deleted.count) { res.status(404).json({ error: "Not on this item" }); return; }
     res.status(204).send();
   } catch (error) {
     next(error);

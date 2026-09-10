@@ -59,7 +59,7 @@ const groupFields = {
   sortOrder: true,
   createdAt: true,
   updatedAt: true,
-  _count: { select: { items: true } },
+  _count: { select: { items: true, menuItemLinks: true } },
 } as const;
 const orderBy: Prisma.AddonGroupOrderByWithRelationInput[] = [{ sortOrder: "asc" }, { name: "asc" }];
 
@@ -173,8 +173,9 @@ addonGroupsRouter.delete("/:id", async (req, res, next) => {
   try {
     const existing = await prisma.addonGroup.findFirst({ where: { id: req.params.id, tenantId: tenantId(req) }, select: { id: true } });
     if (!existing) { res.status(404).json({ error: "Add-on group not found" }); return; }
-    // Its add-on links (AddonGroupItem) cascade away — the add-ons survive.
-    // A menu-item attachment check is added in Phase 7.
+    const links = await prisma.menuItemAddonGroup.count({ where: { addonGroupId: existing.id } });
+    if (links > 0) { res.status(409).json({ error: `This group is on ${links} menu item${links === 1 ? "" : "s"} — remove it from those first` }); return; }
+    // Its add-on links (AddonGroupItem) cascade away; the add-ons survive.
     await prisma.addonGroup.delete({ where: { id: existing.id } });
     res.status(204).send();
   } catch (error) {
