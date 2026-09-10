@@ -41,6 +41,9 @@ const createSchema = z.object({
   isActive: z.boolean().default(true),
   isAvailable: z.boolean().default(true),
   sortOrder: z.coerce.number().int().min(0).max(99999).optional(),
+  // Which selling points this item is offered at. Empty/omitted = unallocated
+  // = sellable everywhere (the default). POS filters on this.
+  locationIds: z.array(z.string().cuid()).optional(),
 });
 const updateSchema = partialNoDefaults(createSchema);
 const reorderSchema = z.object({ menuCategoryId: z.string().trim().min(1), orderedIds: z.array(z.string().trim().min(1)).min(1) });
@@ -68,6 +71,7 @@ const itemFields = {
   isActive: true,
   isAvailable: true,
   sortOrder: true,
+  locations: { select: { id: true, name: true } },
   createdAt: true,
   updatedAt: true,
   _count: { select: { orderItems: true, variants: true, addonGroupLinks: true } },
@@ -95,6 +99,12 @@ const orderBy: Prisma.MenuItemOrderByWithRelationInput[] = [
 async function assertCategory(tid: string, menuCategoryId: string) {
   const category = await prisma.menuCategory.findFirst({ where: { id: menuCategoryId, tenantId: tid }, select: { id: true } });
   if (!category) throw Object.assign(new Error("Selected category was not found"), { status: 400 });
+}
+
+async function assertLocations(tid: string, ids: string[]) {
+  if (!ids.length) return;
+  const count = await prisma.location.count({ where: { id: { in: ids }, tenantId: tid } });
+  if (count !== new Set(ids).size) throw Object.assign(new Error("Every location must belong to this property"), { status: 400 });
 }
 
 menuItemsRouter.get("/", async (req, res, next) => {
@@ -144,12 +154,17 @@ menuItemsRouter.post("/", async (req, res, next) => {
   const tid = tenantId(req);
   try {
     await assertCategory(tid, data.data.menuCategoryId);
-    let { sortOrder } = data.data;
+    const { locationIds, ...rest } = data.data;
+    await assertLocations(tid, locationIds ?? []);
+    let { sortOrder } = rest;
     if (sortOrder === undefined) {
       const last = await prisma.menuItem.findFirst({ where: { tenantId: tid, menuCategoryId: data.data.menuCategoryId }, orderBy: { sortOrder: "desc" }, select: { sortOrder: true } });
       sortOrder = (last?.sortOrder ?? -1) + 1;
     }
-    const item = await prisma.menuItem.create({ data: { tenantId: tid, ...data.data, sortOrder }, select: itemFields });
+    const item = await prisma.menuItem.create({
+      data: { tenantId: tid, ...rest, sortOrder, ...(locationIds?.length ? { locations: { connect: locationIds.map((id) => ({ id })) } } : {}) },
+      select: itemFields,
+    });
     res.status(201).json({ item });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") { res.status(409).json({ error: "A menu item with this SKU already exists" }); return; }
@@ -164,9 +179,15 @@ menuItemsRouter.patch("/:id", async (req, res, next) => {
   const tid = tenantId(req);
   try {
     if (data.data.menuCategoryId) await assertCategory(tid, data.data.menuCategoryId);
-    const updated = await prisma.menuItem.updateMany({ where: { id: req.params.id, tenantId: tid }, data: data.data });
-    if (!updated.count) { res.status(404).json({ error: "Menu item not found" }); return; }
-    const item = await prisma.menuItem.findUniqueOrThrow({ where: { id: req.params.id }, select: itemFields });
+    const { locationIds, ...rest } = data.data;
+    if (locationIds) await assertLocations(tid, locationIds);
+    const existing = await prisma.menuItem.findFirst({ where: { id: req.params.id, tenantId: tid }, select: { id: true } });
+    if (!existing) { res.status(404).json({ error: "Menu item not found" }); return; }
+    const item = await prisma.menuItem.update({
+      where: { id: existing.id },
+      data: { ...rest, ...(locationIds ? { locations: { set: locationIds.map((id) => ({ id })) } } : {}) },
+      select: itemFields,
+    });
     res.json({ item });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") { res.status(409).json({ error: "A menu item with this SKU already exists" }); return; }
