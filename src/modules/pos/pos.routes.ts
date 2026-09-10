@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { randomBytes } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 
@@ -182,7 +183,7 @@ function tenantIdFor(request: { tenantId?: string }): string {
   return request.tenantId;
 }
 
-const orderInclude = {
+export const orderInclude = {
   items: { include: {
     menuItem: { include: { product: true, recipe: { include: { ingredients: { include: { product: true } } } } } },
     variant: { select: { id: true, name: true } },
@@ -242,7 +243,7 @@ async function chargeOrderToFolio(
   });
 }
 
-async function taxSettingsFor(tid: string) {
+export async function taxSettingsFor(tid: string) {
   const profile = await prisma.businessProfile.findUnique({ where: { tenantId: tid }, select: { taxRate: true, taxMode: true, taxTreatment: true } });
   return profile ?? null;
 }
@@ -267,7 +268,7 @@ type FinancialOrder = Parameters<typeof computeOrderFinancials>[0] & { payments:
 
 /** Attaches the money breakdown (subtotal/discount/tax/total) plus the flat
  * total/paid fields older frontend callers already read. */
-function withFinancials<T extends FinancialOrder>(order: T, tax: Awaited<ReturnType<typeof taxSettingsFor>>) {
+export function withFinancials<T extends FinancialOrder>(order: T, tax: Awaited<ReturnType<typeof taxSettingsFor>>) {
   const financials = computeOrderFinancials(order, tax);
   const paid = order.payments.reduce((s, p) => s + Number(p.amount), 0);
   return { ...order, financials, total: financials.total, paid };
@@ -971,6 +972,24 @@ posRouter.get("/orders/:id", async (req, res) => {
   ]);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
   res.status(200).json({ order: withFinancials(order, tax) });
+});
+
+/** Mint (once) and return a public, no-auth link to this order's receipt. The
+ * link's origin is taken from the calling app so it points back at whatever
+ * host the POS is served from. */
+posRouter.post("/orders/:id/share", async (req, res) => {
+  const tid = tenantIdFor(req);
+  const order = await prisma.posOrder.findFirst({ where: { id: req.params.id, tenantId: tid }, select: { id: true, shareToken: true } });
+  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
+
+  let token = order.shareToken;
+  if (!token) {
+    token = randomBytes(12).toString("base64url");
+    await prisma.posOrder.update({ where: { id: order.id }, data: { shareToken: token } });
+  }
+
+  const base = (req.get("origin") || process.env.PUBLIC_APP_URL || "").replace(/\/$/, "");
+  res.status(200).json({ token, url: `${base}/r/${token}` });
 });
 
 /** The full active add-on catalog for the checkout add-on picker, each with

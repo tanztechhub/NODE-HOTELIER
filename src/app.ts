@@ -11,6 +11,7 @@ import { notFound } from "./middleware/notFound.js";
 import { tenantContext } from "./middleware/tenantContext.js";
 import { router } from "./routes/index.js";
 import { platformRouter } from "./modules/platform/platform.routes.js";
+import { publicReceiptsRouter } from "./modules/public-receipts/public-receipts.routes.js";
 
 export function createApp(): Application {
   const app = express();
@@ -59,6 +60,10 @@ export function createApp(): Application {
   // of its own (it's what CREATES tenants) and is gated only by its own
   // shared-key middleware, never x-tenant-id.
   app.use("/api/platform", platformRouter);
+
+  // Public receipt pages — identified by a globally-unique token, so no tenant
+  // header and no auth. Must sit before tenantContext.
+  app.use("/public/receipts", publicReceiptsRouter);
 
   app.use(tenantContext);
 

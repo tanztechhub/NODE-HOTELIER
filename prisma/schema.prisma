@@ -1504,6 +1504,9 @@ model PosOrder {
   // Money state, kept apart from `status`: an order can be COMPLETED and
   // still UNPAID/PARTIAL when finished on credit.
   paymentStatus      PosPaymentStatus      @default(UNPAID)
+  // Opaque token for a public, no-auth receipt page. Minted on first Share,
+  // reused thereafter. Globally unique so the public route needs no tenant.
+  shareToken         String?               @unique
   createdAt          DateTime              @default(now())
   updatedAt          DateTime              @updatedAt
   tenant             Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
