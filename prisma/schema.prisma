@@ -252,6 +252,7 @@ model Tenant {
   posOrders          PosOrder[]
   addons             Addon[]
   menuItems          MenuItem[]
+  menuCategories     MenuCategory[]
   recipes            Recipe[]
   tables             Table[]
   payments           Payment[]
@@ -1337,10 +1338,33 @@ model Location {
   @@unique([tenantId, name])
 }
 
+// The Menu module's own category table (Menu ▸ Categories). Replaces the
+// generic Category(scope=RESTAURANT) for menu use — richer (image, explicit
+// sort order) and not tangled into the 3-level Category hierarchy. Existing
+// RESTAURANT categories are copied in on migration; MenuItem is repointed
+// here in a later phase.
+model MenuCategory {
+  id          String     @id @default(cuid())
+  tenantId    String
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  imageUrl    String?
+  sortOrder   Int        @default(0)
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  menuItems   MenuItem[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, isActive, sortOrder])
+}
+
 model MenuItem {
   id           String           @id @default(cuid())
   tenantId     String
   categoryId   String
+  menuCategoryId String?
   productId    String?
   recipeId     String?
   name         String
@@ -1354,6 +1378,7 @@ model MenuItem {
   updatedAt    DateTime         @updatedAt
   tenant       Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   category     Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  menuCategory MenuCategory?    @relation(fields: [menuCategoryId], references: [id], onDelete: Restrict)
   product      Product?         @relation(fields: [productId], references: [id], onDelete: SetNull)
   recipe       Recipe?          @relation(fields: [recipeId], references: [id], onDelete: SetNull)
   orderItems   PosOrderItem[]
@@ -1362,6 +1387,7 @@ model MenuItem {
   locations    Location[]
 
   @@index([tenantId, categoryId])
+  @@index([tenantId, menuCategoryId])
   @@index([tenantId, recipeId])
 }
 
