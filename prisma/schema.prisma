@@ -541,7 +541,8 @@ model UnitOfMeasure {
   name      String
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
-  services  Service[]
+  services     Service[]
+  packProducts Product[] @relation("ProductPackUnit")
 
   @@unique([tenantId, name])
 }
@@ -1221,6 +1222,17 @@ model Product {
   isPerishable  Boolean @default(false)
   shelfLifeDays Int?
 
+  // Pack / container tracking (bar bottles, kegs, cases). When packSize +
+  // packUnitId are set the product's stock, recipe quantities and POS
+  // deductions are all held in packUnit (e.g. ml); the number of whole
+  // packs shown in the UI is just quantity / packSize. packLabel is the
+  // noun for one pack ("bottle", "can", "keg"). Left blank for products
+  // that are simply counted (each / kg).
+  packSize   Decimal?       @db.Decimal(12, 3)
+  packUnitId String?
+  packUnit   UnitOfMeasure? @relation("ProductPackUnit", fields: [packUnitId], references: [id], onDelete: SetNull)
+  packLabel  String?
+
   // Stock lives per-location (see ProductStock) — a product carries no
   // quantity of its own. reorderLevel/maxStockLevel stay tenant-wide
   // defaults for now; nothing needs them to vary per location yet.
@@ -1240,6 +1252,7 @@ model Product {
   updatedAt DateTime @updatedAt
 
   menuItems         MenuItem[]
+  variantStocks     MenuItemVariant[]  @relation("VariantStock")
   movements         InventoryMovement[]
   recipeIngredients RecipeIngredient[]
   stocks            ProductStock[]
@@ -1406,8 +1419,14 @@ model MenuItem {
   // one going forward.
   categoryId     String?
   menuCategoryId String
-  productId      String?
-  recipeId       String?
+  // Stock deduction for this item. Either productId (a single product, of
+  // which each sale consumes stockQtyPerUnit — e.g. 500 for a bottled beer)
+  // or recipeId (multi-ingredient, quantities on RecipeIngredient). Both
+  // null = the item consumes no tracked stock. Variants can override with
+  // their own product + quantity (see MenuItemVariant).
+  productId       String?
+  recipeId        String?
+  stockQtyPerUnit Decimal? @db.Decimal(12, 3)
   name           String
   shortName      String?
   sku            String?
@@ -1459,6 +1478,14 @@ model MenuItemVariant {
   name       String
   sku        String?
   price      Decimal        @db.Decimal(12, 2)
+  // Optional per-variant stock deduction. When stockProductId is set,
+  // selling this variant consumes stockQtyPerUnit (in the product's pack
+  // unit) of that product, INSTEAD of the parent item's product/recipe —
+  // this is how "House Whisky" has Tot (25), Double (50) and Bottle (750)
+  // variants all drawing from the same bottle stock.
+  stockProductId  String?
+  stockProduct    Product? @relation("VariantStock", fields: [stockProductId], references: [id], onDelete: SetNull)
+  stockQtyPerUnit Decimal? @db.Decimal(12, 3)
   isActive   Boolean        @default(true)
   sortOrder  Int            @default(0)
   createdAt  DateTime       @default(now())

@@ -17,9 +17,14 @@ export const UNITS_OF_MEASURE = [
 ] as const;
 
 const blankToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
+const blankToNull = (v: unknown) => (v == null || (typeof v === "string" && v.trim() === "") ? null : v);
 const optionalText = (max: number) => z.preprocess(blankToUndefined, z.string().trim().max(max).optional());
 const optionalId = z.preprocess(blankToUndefined, z.string().trim().optional());
 const optionalNumber = (min = 0) => z.preprocess(blankToUndefined, z.coerce.number().min(min).optional());
+// Blank clears the field (needed so a product can stop being pack-tracked).
+const nullableText = (max: number) => z.preprocess(blankToNull, z.string().trim().max(max).nullable());
+const nullableId = z.preprocess(blankToNull, z.string().trim().nullable());
+const nullableNumber = (min = 0) => z.preprocess(blankToNull, z.coerce.number().min(min).nullable());
 
 const createSchema = z.object({
   categoryId: optionalId,
@@ -32,6 +37,14 @@ const createSchema = z.object({
   unit: z.enum(UNITS_OF_MEASURE).default("Each"),
   isPerishable: z.boolean().default(false),
   shelfLifeDays: optionalNumber(0),
+  // Pack / container tracking. packUnitId points at a UnitOfMeasure row
+  // (e.g. "ml"); packSize is how much of that unit is in one pack; packLabel
+  // is the pack noun. All three or none — when set, this product's stock is
+  // held in packUnit and the UI derives "N <packLabel>s" as quantity /
+  // packSize.
+  packSize: nullableNumber(0.001).optional(),
+  packUnitId: nullableId.optional(),
+  packLabel: nullableText(40).optional(),
   openingStock: z.coerce.number().min(0).default(0),
   // Where opening stock is received. Optional when the property has exactly
   // one location (auto-resolved, same convenience the old single-store
@@ -91,6 +104,10 @@ const productFields = {
   unit: true,
   isPerishable: true,
   shelfLifeDays: true,
+  packSize: true,
+  packLabel: true,
+  packUnitId: true,
+  packUnit: { select: { id: true, name: true } },
   reorderLevel: true,
   maxStockLevel: true,
   unitCost: true,
@@ -119,6 +136,12 @@ async function assertLocationInTenant(locationId: string, tid: string) {
   const location = await prisma.location.findFirst({ where: { id: locationId, tenantId: tid }, select: { id: true, name: true } });
   if (!location) throw Object.assign(new Error("Choose a location from this property"), { status: 400 });
   return location;
+}
+
+async function assertPackUnit(packUnitId: string | null | undefined, tid: string) {
+  if (!packUnitId) return;
+  const unit = await prisma.unitOfMeasure.findFirst({ where: { id: packUnitId, tenantId: tid }, select: { id: true } });
+  if (!unit) throw Object.assign(new Error("Choose a pack unit from this property's units of measure"), { status: 400 });
 }
 
 productsRouter.get("/", async (req, res) => {
@@ -173,6 +196,7 @@ productsRouter.post("/", async (req, res, next) => {
       else { res.status(400).json({ error: "Choose a location to receive the opening stock at" }); return; }
     }
     if (receivingLocationId) await assertLocationInTenant(receivingLocationId, tid);
+    await assertPackUnit(rest.packUnitId, tid);
     if (categoryId) {
       const category = await prisma.category.findFirst({ where: { id: categoryId, tenantId: tid, scope: "STORE" } });
       if (!category) { res.status(400).json({ error: "Selected category was not found" }); return; }
@@ -206,6 +230,7 @@ productsRouter.patch("/:id", async (req, res, next) => {
       const category = await prisma.category.findFirst({ where: { id: data.data.categoryId, tenantId: tid } });
       if (!category) { res.status(400).json({ error: "Selected category was not found" }); return; }
     }
+    if (data.data.packUnitId) await assertPackUnit(data.data.packUnitId, tid);
     const updated = await prisma.product.updateMany({ where: { id: req.params.id, tenantId: tid }, data: data.data });
     if (!updated.count) { res.status(404).json({ error: "Product not found" }); return; }
     const product = await prisma.product.findUniqueOrThrow({ where: { id: req.params.id }, select: productFields });

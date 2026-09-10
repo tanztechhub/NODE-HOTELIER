@@ -20,6 +20,9 @@ const TAX_TREATMENTS = ["STANDARD", "ZERO_RATED", "EXEMPT"] as const;
 const blankToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 const blankToNull = (v: unknown) => (v === "" || v == null ? null : v);
 const optionalText = (max: number) => z.preprocess(blankToUndefined, z.string().trim().max(max).optional());
+// null clears the link / quantity.
+const nullableId = z.preprocess(blankToNull, z.string().trim().min(1).nullable());
+const nullableQty = z.preprocess(blankToNull, z.coerce.number().positive().max(9_999_999).nullable());
 // Tax facets: null = inherit the tenant's BusinessProfile default, a value = override.
 const nullableRate = z.preprocess(blankToNull, z.coerce.number().min(0).max(100).nullable());
 const nullableEnum = <T extends readonly [string, ...string[]]>(values: T) =>
@@ -35,6 +38,11 @@ const createSchema = z.object({
   taxRate: nullableRate.optional(),
   taxMode: nullableEnum(DRINK_TAX_MODES).optional(),
   taxTreatment: nullableEnum(TAX_TREATMENTS).optional(),
+  // Stock deduction: either a direct product (consumes stockQtyPerUnit of
+  // it per sale) or a recipe (multi-ingredient). Both null = no stock use.
+  productId: nullableId.optional(),
+  recipeId: nullableId.optional(),
+  stockQtyPerUnit: nullableQty.optional(),
   photoUrl: optionalText(2000),
   temperature: z.enum(DRINK_TEMPS).default("OTHER"),
   isVegetarian: z.boolean().default(false),
@@ -54,6 +62,11 @@ const tenantId = (req: { tenantId?: string }) => {
   return req.tenantId;
 };
 
+const packUnitSelect = { select: { id: true, name: true } } as const;
+const stockProductSelect = {
+  select: { id: true, name: true, unit: true, packSize: true, packLabel: true, packUnit: packUnitSelect },
+} as const;
+
 const itemFields = {
   id: true,
   name: true,
@@ -66,6 +79,11 @@ const itemFields = {
   taxRate: true,
   taxMode: true,
   taxTreatment: true,
+  productId: true,
+  recipeId: true,
+  stockQtyPerUnit: true,
+  product: stockProductSelect,
+  recipe: { select: { id: true, name: true } },
   photoUrl: true,
   temperature: true,
   isVegetarian: true,
@@ -85,6 +103,9 @@ const variantFields = {
   name: true,
   sku: true,
   price: true,
+  stockProductId: true,
+  stockQtyPerUnit: true,
+  stockProduct: stockProductSelect,
   isActive: true,
   sortOrder: true,
   createdAt: true,
@@ -107,6 +128,18 @@ async function assertLocations(tid: string, ids: string[]) {
   if (!ids.length) return;
   const count = await prisma.location.count({ where: { id: { in: ids }, tenantId: tid } });
   if (count !== new Set(ids).size) throw Object.assign(new Error("Every location must belong to this property"), { status: 400 });
+}
+
+async function assertProduct(tid: string, productId: string | null | undefined) {
+  if (!productId) return;
+  const found = await prisma.product.findFirst({ where: { id: productId, tenantId: tid }, select: { id: true } });
+  if (!found) throw Object.assign(new Error("Selected product was not found"), { status: 400 });
+}
+
+async function assertRecipe(tid: string, recipeId: string | null | undefined) {
+  if (!recipeId) return;
+  const found = await prisma.recipe.findFirst({ where: { id: recipeId, tenantId: tid }, select: { id: true } });
+  if (!found) throw Object.assign(new Error("Selected recipe was not found"), { status: 400 });
 }
 
 menuItemsRouter.get("/", async (req, res, next) => {
@@ -158,6 +191,8 @@ menuItemsRouter.post("/", async (req, res, next) => {
     await assertCategory(tid, data.data.menuCategoryId);
     const { locationIds, ...rest } = data.data;
     await assertLocations(tid, locationIds ?? []);
+    await assertProduct(tid, rest.productId);
+    await assertRecipe(tid, rest.recipeId);
     let { sortOrder } = rest;
     if (sortOrder === undefined) {
       const last = await prisma.menuItem.findFirst({ where: { tenantId: tid, menuCategoryId: data.data.menuCategoryId }, orderBy: { sortOrder: "desc" }, select: { sortOrder: true } });
@@ -183,6 +218,8 @@ menuItemsRouter.patch("/:id", async (req, res, next) => {
     if (data.data.menuCategoryId) await assertCategory(tid, data.data.menuCategoryId);
     const { locationIds, ...rest } = data.data;
     if (locationIds) await assertLocations(tid, locationIds);
+    await assertProduct(tid, rest.productId);
+    await assertRecipe(tid, rest.recipeId);
     const existing = await prisma.menuItem.findFirst({ where: { id: req.params.id, tenantId: tid }, select: { id: true } });
     if (!existing) { res.status(404).json({ error: "Menu item not found" }); return; }
     const item = await prisma.menuItem.update({
@@ -237,6 +274,10 @@ const variantCreateSchema = z.object({
   name: z.string().trim().min(1).max(60),
   sku: optionalText(60),
   price: z.coerce.number().min(0, "Price cannot be negative").max(9_999_999),
+  // Overrides the parent item's stock deduction for this size — e.g. a Tot
+  // consumes 25 of the whisky product, a Bottle 750.
+  stockProductId: nullableId.optional(),
+  stockQtyPerUnit: nullableQty.optional(),
   isActive: z.boolean().default(true),
   sortOrder: z.coerce.number().int().min(0).max(99999).optional(),
 });
@@ -275,6 +316,7 @@ menuItemsRouter.post("/:menuItemId/variants", async (req, res, next) => {
   try {
     await assertMenuItem(tid, req.params.menuItemId);
     await assertVariantSkuFree(tid, data.data.sku);
+    await assertProduct(tid, data.data.stockProductId);
     let { sortOrder } = data.data;
     if (sortOrder === undefined) {
       const last = await prisma.menuItemVariant.findFirst({ where: { tenantId: tid, menuItemId: req.params.menuItemId }, orderBy: { sortOrder: "desc" }, select: { sortOrder: true } });
@@ -297,6 +339,7 @@ menuItemsRouter.patch("/:menuItemId/variants/:id", async (req, res, next) => {
     const exists = await prisma.menuItemVariant.findFirst({ where: { id: req.params.id, tenantId: tid, menuItemId: req.params.menuItemId }, select: { id: true } });
     if (!exists) { res.status(404).json({ error: "Variant not found" }); return; }
     await assertVariantSkuFree(tid, data.data.sku, req.params.id);
+    await assertProduct(tid, data.data.stockProductId);
     await prisma.menuItemVariant.update({ where: { id: req.params.id }, data: data.data });
     const variant = await prisma.menuItemVariant.findUniqueOrThrow({ where: { id: req.params.id }, select: variantFields });
     res.json({ variant });
