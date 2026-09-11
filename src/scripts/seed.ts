@@ -25,7 +25,7 @@ const tenant = await prisma.tenant.upsert({
 // see tenantBootstrap.ts. Only the demo-specific catalog data below
 // (rooms, services, menu, tables) is unique to this local dev seed.
 await prisma.$transaction((tx) =>
-  provisionTenantBootstrap(tx, { tenantId: tenant.id, businessName: "HOTELIER Demo", businessType: "HOTEL" }),
+  provisionTenantBootstrap(tx, { tenantId: tenant.id, businessName: "HOTELIER Demo", businessType: "HOTEL", modules: { rooms: true, sales: true, services: true } }),
 );
 
 const roomTypeIds = new Map<string, string>();

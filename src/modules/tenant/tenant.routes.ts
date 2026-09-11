@@ -39,6 +39,7 @@ tenantRouter.get("/resolve", async (req, res) => {
           businessType: true,
         },
       },
+      tenantModules: { where: { isEnabled: true }, select: { moduleKey: true } },
     },
   });
   if (!tenant) { res.status(404).json({ error: "This workspace could not be found" }); return; }
@@ -53,8 +54,19 @@ tenantRouter.get("/resolve", async (req, res) => {
       logoUrl: tenant.businessProfile?.logoUrl ?? null,
       shortName: tenant.businessProfile?.shortName ?? null,
       businessType: tenant.businessProfile?.businessType ?? "HOTEL",
+      // Which of Room Management/Sales/Services this tenant has — the
+      // sidebar hides whole nav groups the tenant doesn't have. Everything
+      // else (Products, Store, Team, Reports, Finance) is always on.
+      moduleKeys: tenant.tenantModules.map((m) => m.moduleKey),
     },
   });
+});
+
+/** Same moduleKeys as /resolve, but keyed off the x-tenant-id header instead
+ * of a slug — for local dev, which has no subdomain to resolve through. */
+tenantRouter.get("/modules", async (req, res) => {
+  const tenantModules = await prisma.tenantModule.findMany({ where: { tenantId: tenantId(req), isEnabled: true }, select: { moduleKey: true } });
+  res.json({ moduleKeys: tenantModules.map((m) => m.moduleKey) });
 });
 
 tenantRouter.get("/license", async (req, res) => {

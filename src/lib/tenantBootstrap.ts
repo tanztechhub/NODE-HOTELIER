@@ -4,10 +4,32 @@ import { hashSecret } from "./hash.js";
 // Every module a tenant can have enabled. `Module` rows themselves are
 // global reference data (keyed by `key`, not tenant-scoped) shared across
 // every tenant — upserting them here is safe to repeat for every new tenant.
+// (BAR_LOUNGE is a vestigial enum value with no route or nav tied to it —
+// deliberately never seeded.)
 export const MODULE_KEYS = [
   "PRODUCTS", "STORE", "POS", "KITCHEN", "ROOMS", "RESERVATIONS",
-  "HOUSEKEEPING", "HR", "REPORTS", "CUSTOMERS",
+  "HOUSEKEEPING", "HR", "REPORTS", "CUSTOMERS", "SERVICE_CENTER", "ACCOUNTING",
 ] as const;
+
+// The platform admin only ever offers three toggles when creating or editing
+// a tenant — everything else (Products/Store catalog, Team, Reports,
+// Customers, Finance) is common infrastructure every property needs
+// regardless of which "kind" of business it runs, so it's always on and
+// never exposed as a checkbox.
+export const MODULE_GROUP_KEYS = {
+  rooms: ["ROOMS", "RESERVATIONS", "HOUSEKEEPING"],
+  sales: ["POS", "KITCHEN"],
+  services: ["SERVICE_CENTER"],
+} as const;
+export type ModuleGroups = { rooms: boolean; sales: boolean; services: boolean };
+const GROUPED_KEYS = new Set<string>([...MODULE_GROUP_KEYS.rooms, ...MODULE_GROUP_KEYS.sales, ...MODULE_GROUP_KEYS.services]);
+
+function isEnabledFor(moduleKey: (typeof MODULE_KEYS)[number], modules: ModuleGroups): boolean {
+  if (!GROUPED_KEYS.has(moduleKey)) return true; // common — always on
+  if ((MODULE_GROUP_KEYS.rooms as readonly string[]).includes(moduleKey)) return modules.rooms;
+  if ((MODULE_GROUP_KEYS.sales as readonly string[]).includes(moduleKey)) return modules.sales;
+  return modules.services;
+}
 
 export const ALL_SECTIONS = [
   "OVERVIEW", "RECEPTION", "HOUSEKEEPING", "SALES", "KITCHEN",
@@ -56,6 +78,10 @@ export type ProvisionTenantInput = {
    * "000000", same as the dev seed always has. Callers (e.g. the platform
    * admin) should return this to the operator exactly once, at creation. */
   bootstrapPin?: string;
+  /** Which of the three toggleable module groups this tenant starts with —
+   * the platform admin requires at least one. Everything else (Products,
+   * Store, HR, Reports, Customers, Accounting) is always enabled. */
+  modules: ModuleGroups;
 };
 
 export type ProvisionTenantResult = {
@@ -79,7 +105,7 @@ export async function provisionTenantBootstrap(
   tx: Prisma.TransactionClient,
   input: ProvisionTenantInput,
 ): Promise<ProvisionTenantResult> {
-  const { tenantId } = input;
+  const { tenantId, modules } = input;
 
   for (const moduleKey of MODULE_KEYS) {
     await tx.module.upsert({
@@ -87,10 +113,11 @@ export async function provisionTenantBootstrap(
       update: {},
       create: { key: moduleKey, name: moduleKey.replace("_", " ") },
     });
+    const isEnabled = isEnabledFor(moduleKey, modules);
     await tx.tenantModule.upsert({
       where: { tenantId_moduleKey: { tenantId, moduleKey } },
-      update: { isEnabled: true },
-      create: { tenantId, moduleKey, isEnabled: true },
+      update: { isEnabled },
+      create: { tenantId, moduleKey, isEnabled },
     });
   }
 

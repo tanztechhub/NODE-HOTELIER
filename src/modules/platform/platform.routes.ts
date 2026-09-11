@@ -7,7 +7,7 @@ import { prisma } from "../../lib/prisma.js";
 import { env } from "../../config/env.js";
 import { partialNoDefaults } from "../../lib/zod.js";
 import { verifySecret } from "../../lib/hash.js";
-import { provisionTenantBootstrap } from "../../lib/tenantBootstrap.js";
+import { provisionTenantBootstrap, MODULE_KEYS, MODULE_GROUP_KEYS, type ModuleGroups } from "../../lib/tenantBootstrap.js";
 import { platformAuth } from "./platform.auth.js";
 import { adminsRouter } from "./admins.routes.js";
 import { plansRouter } from "../plans/plans.routes.js";
@@ -118,7 +118,26 @@ const createTenantSchema = z.object({
   // How long the trial period runs before nextDueDate hits — left unset
   // means no due date is scheduled yet (handled manually later).
   trialDays: z.coerce.number().int().min(1).max(3650).optional(),
+  modules: z.object({ rooms: z.boolean(), sales: z.boolean(), services: z.boolean() })
+    .refine((m) => m.rooms || m.sales || m.services, { message: "Enable at least one module", path: ["rooms"] }),
 });
+
+const modulesSchema = z.object({ rooms: z.boolean(), sales: z.boolean(), services: z.boolean() })
+  .refine((m) => m.rooms || m.sales || m.services, { message: "Enable at least one module", path: ["rooms"] });
+
+const GROUPED_KEY_SET = new Set<string>([...MODULE_GROUP_KEYS.rooms, ...MODULE_GROUP_KEYS.sales, ...MODULE_GROUP_KEYS.services]);
+
+/** Derives the three admin-facing toggles from a tenant's enabled
+ * TenantModule keys — one representative key per group is enough since
+ * they're only ever flipped together (see MODULE_GROUP_KEYS). */
+function moduleGroupsFrom(enabledKeys: string[]): ModuleGroups {
+  const enabled = new Set(enabledKeys);
+  return {
+    rooms: MODULE_GROUP_KEYS.rooms.some((k) => enabled.has(k)),
+    sales: MODULE_GROUP_KEYS.sales.some((k) => enabled.has(k)),
+    services: MODULE_GROUP_KEYS.services.some((k) => enabled.has(k)),
+  };
+}
 
 const updateTenantSchema = partialNoDefaults(z.object({
   name: z.string().trim().min(2).max(120),
@@ -255,6 +274,7 @@ platformRouter.post("/tenants", async (req, res) => {
         businessType: data.businessType,
         currency: data.currency,
         contactEmail: data.contactEmail,
+        modules: data.modules,
       });
       return { tenant: created, bootstrap: bootstrapResult };
     });
@@ -284,14 +304,62 @@ platformRouter.get("/tenants/:id", async (req, res) => {
   });
   if (!tenant) { res.status(404).json({ error: "Tenant not found" }); return; }
   const { tenantModules, _count, ...rest } = tenant;
+  const moduleKeys = tenantModules.map((m) => m.moduleKey);
   res.status(200).json({
     tenant: {
       ...serialiseTenantPlan(rest),
-      moduleKeys: tenantModules.map((m) => m.moduleKey),
+      moduleKeys,
+      moduleGroups: moduleGroupsFrom(moduleKeys),
       employeeCount: _count.employees,
       locationCount: _count.locations,
       roleCount: _count.roles,
       loginUrl: loginUrlFor(tenant.slug),
+    },
+  });
+});
+
+/** The only way to flip Room Management / Sales / Services after creation —
+ * everything else a tenant has (Products, Store, HR, Reports, Customers,
+ * Accounting) is common infrastructure and never toggled. Self-healing: also
+ * upserts the common keys to enabled, so a tenant provisioned before a given
+ * key existed (e.g. Service Center, added after some tenants were created)
+ * gets it the first time an admin touches this tenant's modules at all. */
+platformRouter.patch("/tenants/:id/modules", async (req, res) => {
+  const parsed = modulesSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Invalid modules", details: parsed.error.flatten() }); return; }
+  const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id }, select: { id: true } });
+  if (!tenant) { res.status(404).json({ error: "Tenant not found" }); return; }
+
+  await prisma.$transaction(async (tx) => {
+    for (const moduleKey of MODULE_KEYS) {
+      const isEnabled = GROUPED_KEY_SET.has(moduleKey)
+        ? (MODULE_GROUP_KEYS.rooms as readonly string[]).includes(moduleKey) ? parsed.data.rooms
+          : (MODULE_GROUP_KEYS.sales as readonly string[]).includes(moduleKey) ? parsed.data.sales
+          : parsed.data.services
+        : true;
+      await tx.tenantModule.upsert({
+        where: { tenantId_moduleKey: { tenantId: tenant.id, moduleKey } },
+        update: { isEnabled },
+        create: { tenantId: tenant.id, moduleKey, isEnabled },
+      });
+    }
+  });
+
+  const updated = await prisma.tenant.findUniqueOrThrow({
+    where: { id: tenant.id },
+    include: { businessProfile: true, plan: { select: planSummarySelect }, tenantModules: { where: { isEnabled: true }, select: { moduleKey: true } }, _count: { select: { employees: true, locations: true, roles: true } } },
+  });
+  const { tenantModules, _count, ...rest } = updated;
+  const moduleKeys = tenantModules.map((m) => m.moduleKey);
+  res.status(200).json({
+    tenant: {
+      ...serialiseTenantPlan(rest),
+      moduleKeys,
+      moduleGroups: moduleGroupsFrom(moduleKeys),
+      employeeCount: _count.employees,
+      locationCount: _count.locations,
+      roleCount: _count.roles,
+      loginUrl: loginUrlFor(updated.slug),
     },
   });
 });
