@@ -1392,6 +1392,15 @@ model Location {
   //  DIRECT — served the instant it's rung up, no human confirmation step
   //    (a bakery/café counter that hands the item over on the spot).
   serveMode             OrderServeMode        @default(KITCHEN)
+  // Free-text blocks a document can print above/below its body, specific to
+  // this location (e.g. a branch's own thank-you note or return policy).
+  // Null means "use nothing" — the document falls back to its own default.
+  receiptHeader         String?               @db.Text
+  receiptFooter         String?               @db.Text
+  invoiceHeader         String?               @db.Text
+  invoiceFooter         String?               @db.Text
+  quotationHeader       String?               @db.Text
+  quotationFooter       String?               @db.Text
   createdAt             DateTime              @default(now())
   updatedAt             DateTime              @updatedAt
   menuItems             MenuItem[]

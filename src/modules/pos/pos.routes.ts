@@ -274,6 +274,18 @@ export function withFinancials<T extends FinancialOrder>(order: T, tax: Awaited<
   return { ...order, financials, total: financials.total, paid };
 }
 
+/** Resolves createdBy (the employee who rang the order up — "served by" on
+ * the receipt) to a name. Plain id, no Prisma relation (see the field's own
+ * comment), so it's one extra lookup rather than an include. Used only where
+ * a receipt actually renders — GET /orders/:id and the public share route. */
+export async function withServedBy<T extends { createdBy: string | null }>(
+  order: T,
+): Promise<T & { servedBy: { firstName: string; lastName: string } | null }> {
+  if (!order.createdBy) return { ...order, servedBy: null };
+  const employee = await prisma.employee.findUnique({ where: { id: order.createdBy }, select: { firstName: true, lastName: true } });
+  return { ...order, servedBy: employee ? { firstName: employee.firstName, lastName: employee.lastName } : null };
+}
+
 /** Frees a table back to AVAILABLE if it has no other active order. Call from inside the same transaction that finalized the order. */
 async function releaseTableIfIdle(tx: Prisma.TransactionClient, tableId: string) {
   const stillActive = await tx.posOrder.findFirst({ where: { tableId, status: { in: ["OPEN", "PREPARING", "READY", "SERVED"] } } });
@@ -1040,7 +1052,7 @@ posRouter.get("/orders/:id", async (req, res) => {
     taxSettingsFor(tid),
   ]);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
-  res.status(200).json({ order: withFinancials(order, tax) });
+  res.status(200).json({ order: await withServedBy(withFinancials(order, tax)) });
 });
 
 /** Mint (once) and return a public, no-auth link to this order's receipt. The

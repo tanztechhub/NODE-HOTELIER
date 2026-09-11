@@ -14,6 +14,7 @@ const SERVE_MODES = ["KITCHEN", "COUNTER", "DIRECT"] as const;
 
 const blankToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 const optionalText = (max: number) => z.preprocess(blankToUndefined, z.string().trim().max(max).optional());
+const optionalDocText = z.preprocess(blankToUndefined, z.string().trim().max(2000).optional());
 const optionalId = z.preprocess(blankToUndefined, z.string().trim().optional());
 const optionalEmail = z.preprocess(blankToUndefined, z.email().optional());
 const optionalTime = z.preprocess(blankToUndefined, z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use HH:MM").optional());
@@ -37,6 +38,14 @@ const createSchema = z.object({
   canSellServices: z.boolean().default(true),
   canSellProducts: z.boolean().default(true),
   serveMode: z.enum(SERVE_MODES).default("KITCHEN"),
+  // Printed on the matching document for orders/invoices/quotations from
+  // this location — e.g. a branch-specific thank-you note or return policy.
+  receiptHeader: optionalDocText,
+  receiptFooter: optionalDocText,
+  invoiceHeader: optionalDocText,
+  invoiceFooter: optionalDocText,
+  quotationHeader: optionalDocText,
+  quotationFooter: optionalDocText,
 });
 const updateSchema = partialNoDefaults(createSchema);
 
@@ -64,6 +73,12 @@ const locationFields = {
   canSellServices: true,
   canSellProducts: true,
   serveMode: true,
+  receiptHeader: true,
+  receiptFooter: true,
+  invoiceHeader: true,
+  invoiceFooter: true,
+  quotationHeader: true,
+  quotationFooter: true,
   createdAt: true,
   updatedAt: true,
   _count: { select: { menuItems: true, employees: true } },
