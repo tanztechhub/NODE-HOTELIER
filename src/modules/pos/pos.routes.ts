@@ -378,6 +378,11 @@ posRouter.get("/orders", async (req, res) => {
     // Cap the rows returned (most recent first) so a long-lived POS screen
     // doesn't drag in thousands of historical orders. Omitted = no cap.
     limit: z.coerce.number().int().min(1).max(500).optional(),
+    // Same from/to convention as GET /transactions — date-only strings,
+    // inclusive on both ends (the day named by `to` is fully included, not
+    // cut off at its midnight).
+    from: z.coerce.date().optional(),
+    to: z.coerce.date().optional(),
   }).safeParse(req.query);
   if (!query.success) { res.status(400).json({ error: "Invalid filters" }); return; }
   const tid = tenantIdFor(req);
@@ -391,6 +396,12 @@ posRouter.get("/orders", async (req, res) => {
         ...(query.data.channel ? { channel: query.data.channel } : {}),
         ...(effectiveLocationId ? { locationId: effectiveLocationId } : {}),
         ...(canSeeAll ? {} : { createdBy: req.userId ?? "__unauthenticated__" }),
+        ...(query.data.from || query.data.to ? {
+          createdAt: {
+            ...(query.data.from ? { gte: query.data.from } : {}),
+            ...(query.data.to ? { lt: new Date(query.data.to.getTime() + 24 * 60 * 60 * 1000) } : {}),
+          },
+        } : {}),
       },
       include: orderInclude,
       orderBy: { createdAt: "desc" },
