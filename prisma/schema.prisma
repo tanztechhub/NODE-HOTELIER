@@ -331,6 +331,7 @@ model Tenant {
   suppliers             Supplier[]
   purchases             Purchase[]
   purchaseRequisitions  PurchaseRequisition[]
+  goodsReceipts         GoodsReceipt[]
   serviceCenterServices ServiceCenterService[]
   serviceProviders      ServiceProvider[]
   providerSchedules     ProviderSchedule[]
@@ -1118,16 +1119,19 @@ model PurchaseRequisitionItem {
 enum PurchaseStatus {
   DRAFT
   ORDERED
+  // Some, but not all, ordered quantity has been received via a GoodsReceipt.
+  PARTIALLY_RECEIVED
   RECEIVED
   CANCELLED
 }
 
-// A purchase order raised against one supplier. A document only for now —
-// marking it RECEIVED does NOT yet move stock, post to the ledger, or touch
-// the supplier balance (that arrives with the Goods Received tab). Totals
-// are a snapshot recomputed from the line items on every write:
-// subtotal = sum(lineTotal), taxAmount = subtotal * taxRate/100,
-// total = subtotal + taxAmount. Line items must reference catalog Products.
+// A purchase order raised against one supplier. Totals are a snapshot
+// recomputed from the line items on every write: subtotal = sum(lineTotal),
+// taxAmount = subtotal * taxRate/100, total = subtotal + taxAmount. Line
+// items must reference catalog Products. Stock only moves, and the supplier
+// balance only grows, when a GoodsReceipt is posted against this PO — see
+// that model. locationId is where goods land by default; a receipt can still
+// pick a different location for a split delivery.
 model Purchase {
   id                String               @id @default(cuid())
   tenantId          String
@@ -1135,6 +1139,8 @@ model Purchase {
   purchaseNo        String
   supplierId        String
   supplier          Supplier             @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  locationId        String?
+  location          Location?            @relation("PurchaseLocation", fields: [locationId], references: [id], onDelete: SetNull)
   status            PurchaseStatus       @default(DRAFT)
   orderDate         DateTime             @default(now())
   expectedDate      DateTime?
@@ -1156,6 +1162,7 @@ model Purchase {
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
   items             PurchaseItem[]
+  goodsReceipts     GoodsReceipt[]
 
   @@unique([tenantId, purchaseNo])
   @@index([tenantId, status])
@@ -1164,18 +1171,66 @@ model Purchase {
 }
 
 model PurchaseItem {
-  id         String   @id @default(cuid())
-  purchaseId String
-  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
-  productId  String
-  product    Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
-  quantity   Decimal  @db.Decimal(12, 3)
-  unitCost   Decimal  @default(0) @db.Decimal(12, 2)
-  lineTotal  Decimal  @default(0) @db.Decimal(12, 2)
-  note       String?
-  createdAt  DateTime @default(now())
+  id                String             @id @default(cuid())
+  purchaseId        String
+  purchase          Purchase           @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  productId         String
+  product           Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
+  quantity          Decimal            @db.Decimal(12, 3)
+  unitCost          Decimal            @default(0) @db.Decimal(12, 2)
+  lineTotal         Decimal            @default(0) @db.Decimal(12, 2)
+  // Running total actually received via GoodsReceiptItem rows against this
+  // line — drives the PO's PARTIALLY_RECEIVED/RECEIVED status.
+  receivedQuantity  Decimal            @default(0) @db.Decimal(12, 3)
+  note              String?
+  createdAt         DateTime           @default(now())
+  goodsReceiptItems GoodsReceiptItem[]
 
   @@index([purchaseId])
+}
+
+// One delivery event against a PO. A PO can be received in several batches
+// (part today, the rest next week) — each GoodsReceipt is one of those
+// batches. Posting one moves real stock: every line here writes a PURCHASE
+// InventoryMovement into `location`'s ProductStock (via recordStockMovement,
+// the one choke point — nothing here writes stock directly) and bumps the
+// matching PurchaseItem.receivedQuantity + the supplier's balance. Immutable
+// once created, same as the ledger it feeds — correcting a bad receipt is a
+// new adjustment, not an edit.
+model GoodsReceipt {
+  id                String             @id @default(cuid())
+  tenantId          String
+  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  receiptNo         String
+  purchaseId        String
+  purchase          Purchase           @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  locationId        String
+  location          Location           @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  receivedAt        DateTime           @default(now())
+  note              String?
+  createdBy         String?
+  createdByEmployee Employee?          @relation("GoodsReceiptCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAt         DateTime           @default(now())
+  items             GoodsReceiptItem[]
+
+  @@unique([tenantId, receiptNo])
+  @@index([tenantId, purchaseId])
+  @@index([tenantId, locationId])
+}
+
+model GoodsReceiptItem {
+  id             String       @id @default(cuid())
+  goodsReceiptId String
+  goodsReceipt   GoodsReceipt @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  purchaseItemId String
+  purchaseItem   PurchaseItem @relation(fields: [purchaseItemId], references: [id], onDelete: Restrict)
+  productId      String
+  product        Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  quantity       Decimal      @db.Decimal(12, 3)
+  unitCost       Decimal      @default(0) @db.Decimal(12, 2)
+  note           String?
+
+  @@index([goodsReceiptId])
 }
 
 model CafeSettings {
@@ -1272,6 +1327,7 @@ model Product {
   orderItems        PosOrderItem[]
   purchaseItems     PurchaseItem[]
   requisitionItems  PurchaseRequisitionItem[]
+  goodsReceiptItems GoodsReceiptItem[]
 
   @@unique([tenantId, sku])
   @@unique([tenantId, barcode])
@@ -1417,6 +1473,8 @@ model Location {
   reservationActivities ReservationActivity[]
   assets                Asset[]
   tables                Table[]
+  purchases             Purchase[]          @relation("PurchaseLocation")
+  goodsReceipts         GoodsReceipt[]
 
   @@unique([tenantId, name])
 }
@@ -1900,6 +1958,7 @@ model Employee {
   updatedSuppliers         Supplier[]            @relation("SupplierUpdatedBy")
   createdPurchases         Purchase[]            @relation("PurchaseCreatedBy")
   updatedPurchases         Purchase[]            @relation("PurchaseUpdatedBy")
+  createdGoodsReceipts     GoodsReceipt[]        @relation("GoodsReceiptCreatedBy")
   createdRequisitions      PurchaseRequisition[] @relation("RequisitionCreatedBy")
   updatedRequisitions      PurchaseRequisition[] @relation("RequisitionUpdatedBy")
   reviewedRequisitions     PurchaseRequisition[] @relation("RequisitionReviewedBy")
