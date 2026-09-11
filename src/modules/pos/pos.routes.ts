@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 
-import { requireModule, requirePermission } from "../../middleware/tenantContext.js";
+import { requireModule, requirePermission, hasPermission } from "../../middleware/tenantContext.js";
 import { prisma } from "../../lib/prisma.js";
 import { computeOrderFinancials } from "../../lib/orderTotals.js";
 import { nextTransactionNo } from "../../lib/sequence.js";
@@ -404,11 +404,16 @@ posRouter.post("/orders", async (req, res) => {
   const { location } = locationResult;
   if (location && !location.canSellMenu) { res.status(409).json({ error: `${location.name} isn't set up to sell menu items` }); return; }
   const effectiveLocationId = location?.id ?? null;
-  // Owner-controlled per location (Location.servesDirectly) — a bar or
-  // bakery counter typically hands the item straight over with no prep step,
-  // so the order skips OPEN/PREPARING/READY entirely and goes straight to
-  // SERVED, exactly like a retail (Products/Services) sale already does.
-  const instantServe = location?.servesDirectly === true;
+  // Owner-controlled per location (Location.serveMode). DIRECT: skips
+  // OPEN/PREPARING/READY entirely and goes straight to SERVED, exactly like
+  // a retail (Products/Services) sale already does. COUNTER: no kitchen
+  // prep either, but a human still has to hand it over — the order is born
+  // straight at READY, same as if a kitchen had just finished it, and
+  // whoever's staffing the counter marks it served via the existing
+  // PATCH .../serve (gated to POS_APPROVE_COUNTER for this mode).
+  const serveMode = location?.serveMode ?? "KITCHEN";
+  const instantServe = serveMode === "DIRECT";
+  const startsAtCounter = serveMode === "COUNTER";
 
   let customerId: string | undefined;
   let billToReservationId: string | undefined;
@@ -439,8 +444,9 @@ posRouter.post("/orders", async (req, res) => {
           reservationId: billToReservationId,
           notes: parsed.data.notes,
           discount: parsed.data.discount,
-          status: instantServe ? "SERVED" : "OPEN",
+          status: instantServe ? "SERVED" : startsAtCounter ? "READY" : "OPEN",
           servedAt: instantServe ? new Date() : undefined,
+          readyAt: startsAtCounter ? new Date() : undefined,
           items: { create: lineCreatePayload(resolvedLines) },
         },
         include: orderInclude,
@@ -744,13 +750,23 @@ async function deductStockForOrder(
   }
 }
 
-/** Waiter delivers the food — this is the point the ingredients are actually
- * gone, consumed from the order's own location's stock. Order stays open on
- * the table's tab until it's paid. */
+/** Marks a READY order served — the point the ingredients are actually gone,
+ * consumed from the order's own location's stock. Order stays open on the
+ * table's tab until it's paid. For a KITCHEN-mode order this is just the
+ * waiter picking food up from the pass — anyone can do it. For a
+ * COUNTER-mode order (no kitchen prep, born straight at READY) this IS the
+ * counter's approval step, so it's gated to whoever holds
+ * POS_APPROVE_COUNTER that shift — not tied to a fixed account, since who's
+ * on counter duty changes day to day. */
 posRouter.patch("/orders/:id/serve", async (req, res) => {
   const tid = tenantIdFor(req);
   const activeOrder = await prisma.posOrder.findFirst({ where: { id: req.params.id, tenantId: tid, status: "READY" }, include: orderInclude });
   if (!activeOrder) { res.status(404).json({ error: "Ready order not found" }); return; }
+
+  if (activeOrder.location?.serveMode === "COUNTER") {
+    const allowed = await hasPermission(tid, req.userId, "POS_APPROVE_COUNTER");
+    if (!allowed) { res.status(403).json({ error: "You don't have permission to approve counter orders" }); return; }
+  }
 
   const stockLocationId = await resolveStockLocationId(tid, activeOrder.locationId);
   if (!stockLocationId) { res.status(400).json({ error: "No location is configured to hold stock for this order" }); return; }

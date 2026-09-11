@@ -10,6 +10,7 @@ import { partialNoDefaults } from "../../lib/zod.js";
 export const locationsRouter = Router();
 
 const LOCATION_TYPES = ["RECEPTION", "RESTAURANT", "CAFE", "BAKERY", "BAR", "GYM", "SPA", "STORE", "SHOP", "HOUSEKEEPING"] as const;
+const SERVE_MODES = ["KITCHEN", "COUNTER", "DIRECT"] as const;
 
 const blankToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 const optionalText = (max: number) => z.preprocess(blankToUndefined, z.string().trim().max(max).optional());
@@ -35,7 +36,7 @@ const createSchema = z.object({
   canSellMenu: z.boolean().default(true),
   canSellServices: z.boolean().default(true),
   canSellProducts: z.boolean().default(true),
-  servesDirectly: z.boolean().default(false),
+  serveMode: z.enum(SERVE_MODES).default("KITCHEN"),
 });
 const updateSchema = partialNoDefaults(createSchema);
 
@@ -62,7 +63,7 @@ const locationFields = {
   canSellMenu: true,
   canSellServices: true,
   canSellProducts: true,
-  servesDirectly: true,
+  serveMode: true,
   createdAt: true,
   updatedAt: true,
   _count: { select: { menuItems: true, employees: true } },

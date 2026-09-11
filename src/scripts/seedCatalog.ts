@@ -5,27 +5,27 @@
 // service location-scoping so the "product/menu item at one, several, or
 // every location" cases are all real, visible data — not just theory.
 // Idempotent — safe to re-run; never resets stock that's already been set.
-import type { LocationType, CategoryScope } from "@prisma/client";
+import type { LocationType, CategoryScope, OrderServeMode } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 
 const tenant = await prisma.tenant.findFirstOrThrow({ where: { slug: "hotelier-demo" } });
 const tid = tenant.id;
 
-type LocFlags = { canSellRooms: boolean; canSellMenu: boolean; canSellServices: boolean; canSellProducts: boolean; servesDirectly: boolean };
-// servesDirectly is just a sensible starting point per type — the owner can
-// flip it per location from the Locations screen at any time (e.g. a hotel
-// bakery that DOES want prep time tracked would switch it off).
+type LocFlags = { canSellRooms: boolean; canSellMenu: boolean; canSellServices: boolean; canSellProducts: boolean; serveMode: OrderServeMode };
+// serveMode is just a sensible starting point per type — the owner can
+// change it per location from the Locations screen at any time (e.g. a hotel
+// bakery that DOES want prep time tracked would switch it to KITCHEN).
 const FLAGS_BY_TYPE: Record<LocationType, LocFlags> = {
-  RECEPTION: { canSellRooms: true, canSellMenu: false, canSellServices: true, canSellProducts: true, servesDirectly: false },
-  RESTAURANT: { canSellRooms: false, canSellMenu: true, canSellServices: false, canSellProducts: true, servesDirectly: false },
-  CAFE: { canSellRooms: false, canSellMenu: true, canSellServices: false, canSellProducts: true, servesDirectly: true },
-  BAKERY: { canSellRooms: false, canSellMenu: true, canSellServices: false, canSellProducts: true, servesDirectly: true },
-  BAR: { canSellRooms: false, canSellMenu: true, canSellServices: false, canSellProducts: true, servesDirectly: true },
-  GYM: { canSellRooms: false, canSellMenu: false, canSellServices: true, canSellProducts: true, servesDirectly: false },
-  SPA: { canSellRooms: false, canSellMenu: false, canSellServices: true, canSellProducts: true, servesDirectly: false },
-  STORE: { canSellRooms: false, canSellMenu: false, canSellServices: false, canSellProducts: false, servesDirectly: false },
-  HOUSEKEEPING: { canSellRooms: false, canSellMenu: false, canSellServices: false, canSellProducts: false, servesDirectly: false },
-  SHOP: { canSellRooms: false, canSellMenu: false, canSellServices: false, canSellProducts: true, servesDirectly: false },
+  RECEPTION: { canSellRooms: true, canSellMenu: false, canSellServices: true, canSellProducts: true, serveMode: "KITCHEN" },
+  RESTAURANT: { canSellRooms: false, canSellMenu: true, canSellServices: false, canSellProducts: true, serveMode: "KITCHEN" },
+  CAFE: { canSellRooms: false, canSellMenu: true, canSellServices: false, canSellProducts: true, serveMode: "DIRECT" },
+  BAKERY: { canSellRooms: false, canSellMenu: true, canSellServices: false, canSellProducts: true, serveMode: "DIRECT" },
+  BAR: { canSellRooms: false, canSellMenu: true, canSellServices: false, canSellProducts: true, serveMode: "DIRECT" },
+  GYM: { canSellRooms: false, canSellMenu: false, canSellServices: true, canSellProducts: true, serveMode: "KITCHEN" },
+  SPA: { canSellRooms: false, canSellMenu: false, canSellServices: true, canSellProducts: true, serveMode: "KITCHEN" },
+  STORE: { canSellRooms: false, canSellMenu: false, canSellServices: false, canSellProducts: false, serveMode: "KITCHEN" },
+  HOUSEKEEPING: { canSellRooms: false, canSellMenu: false, canSellServices: false, canSellProducts: false, serveMode: "KITCHEN" },
+  SHOP: { canSellRooms: false, canSellMenu: false, canSellServices: false, canSellProducts: true, serveMode: "KITCHEN" },
 };
 
 async function upsertLocation(name: string, type: keyof typeof FLAGS_BY_TYPE) {

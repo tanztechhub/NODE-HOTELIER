@@ -53,32 +53,42 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
 }
 
 /**
- * Middleware factory: the real, generic permission check — resolves the
- * acting employee's role and 403s unless that role's `permissions` array
- * (Roles & Permissions ▸ Capabilities) includes the one named here. A
- * Super Admin always passes, so the top of every tenant's org chart can
- * never lock itself out even before it's granted anything explicitly.
- * This is what `allowedSections` never was: allowedSections only hides
- * sidebar/routes client-side, this actually rejects the request.
+ * The real, generic permission check — resolves the acting employee's role
+ * and reports whether that role's `permissions` array (Roles & Permissions
+ * ▸ Capabilities) includes the one named here. A Super Admin always passes,
+ * so the top of every tenant's org chart can never lock itself out even
+ * before it's granted anything explicitly. This is what `allowedSections`
+ * never was: allowedSections only hides sidebar/routes client-side, this
+ * actually authorizes (or rejects) the request.
+ *
+ * Exported standalone (not just as the middleware below) for the handful of
+ * places a permission only matters conditionally — e.g. marking a COUNTER-
+ * mode order served needs POS_APPROVE_COUNTER, but a KITCHEN-mode order's
+ * "waiter serves it" step needs no permission at all, and only the handler
+ * knows which case it's in.
  */
+export async function hasPermission(tenantId: string | undefined, userId: string | undefined, permission: Permission): Promise<boolean> {
+  if (!tenantId || !userId) return false;
+  const employee = await prisma.employee.findFirst({
+    where: { id: userId, tenantId, status: "ACTIVE" },
+    select: { role: { select: { name: true, permissions: true } } },
+  });
+  if (!employee) return false;
+  const isSuperAdmin = employee.role?.name === "Super Admin";
+  return isSuperAdmin || (employee.role?.permissions.includes(permission) ?? false);
+}
+
+/** Middleware factory built on {@link hasPermission} for routes that need
+ * the same permission unconditionally, every time. */
 export function requirePermission(permission: Permission) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.tenantId || !req.userId) {
       res.status(401).json({ error: "Sign in required" });
       return;
     }
-    prisma.employee
-      .findFirst({
-        where: { id: req.userId, tenantId: req.tenantId, status: "ACTIVE" },
-        select: { role: { select: { name: true, permissions: true } } },
-      })
-      .then((employee) => {
-        const isSuperAdmin = employee?.role?.name === "Super Admin";
-        const granted = employee?.role?.permissions.includes(permission) ?? false;
-        if (!employee || !(isSuperAdmin || granted)) {
-          res.status(403).json({ error: "You don't have permission to do this" });
-          return;
-        }
+    hasPermission(req.tenantId, req.userId, permission)
+      .then((ok) => {
+        if (!ok) { res.status(403).json({ error: "You don't have permission to do this" }); return; }
         next();
       })
       .catch(next);
