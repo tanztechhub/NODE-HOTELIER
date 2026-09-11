@@ -378,7 +378,7 @@ purchasesRouter.post("/:id/goods-receipts", async (req, res, next) => {
             tenantId: tid, productId: item.productId, locationId: location.id, type: "PURCHASE",
             quantity: qty, unitCost: cost, note: data.data.note ?? `Goods receipt ${receiptNo}`,
             sourceType: "GOODS_RECEIVED", sourceRefId: created.id, performedBy: req.userId ?? null,
-            label: item.product.name,
+            label: item.product.name, occurredAt: data.data.receivedAt,
           });
         } catch (error) {
           if (error instanceof InsufficientStockError) throw error;

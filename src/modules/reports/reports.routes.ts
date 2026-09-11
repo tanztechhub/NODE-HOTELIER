@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
 import { requireModule } from "../../middleware/tenantContext.js";
 import { computeOrderFinancials } from "../../lib/orderTotals.js";
+import { STOCK_MOVEMENT_TYPES } from "../stock-ledger/stock-ledger.routes.js";
 
 export const reportsRouter = Router();
 reportsRouter.use(requireModule("REPORTS"));
@@ -105,4 +106,154 @@ reportsRouter.get("/sales", async (req, res) => {
     orders: completed,
     outstanding,
   });
+});
+
+type MovementType = (typeof STOCK_MOVEMENT_TYPES)[number];
+
+// Local calendar day the same way dayBounds() reads occurredAt — used to key
+// the byDay trend without drifting a movement into the wrong day at UTC
+// boundaries.
+function localDayKey(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Reconstructs, from the stock ledger alone (so it's correct for any past
+ * date range, not just "right now"), opening/closing balances and a
+ * movement-type breakdown per product — plus a day-by-day purchases vs.
+ * sales(=usage) trend. This is what answers "how much of X did the kitchen
+ * get through this week" without a separate live snapshot to keep in sync. */
+reportsRouter.get("/inventory", async (req, res, next) => {
+  try {
+    const query = z.object({
+      from: isoDate.optional(),
+      to: isoDate.optional(),
+      locationId: z.string().trim().optional(),
+      productId: z.string().trim().optional(),
+    }).safeParse(req.query);
+    if (!query.success) { res.status(400).json({ error: "Invalid filters", details: query.error.flatten() }); return; }
+    const tid = tenantId(req);
+    const { locationId, productId } = query.data;
+    const { start, end } = dayBounds(query.data.from, query.data.to);
+
+    const movements = await prisma.inventoryMovement.findMany({
+      where: {
+        tenantId: tid,
+        occurredAt: { lte: end },
+        ...(locationId ? { locationId } : {}),
+        ...(productId ? { productId } : {}),
+      },
+      select: { productId: true, locationId: true, type: true, quantity: true, value: true, occurredAt: true },
+      orderBy: { occurredAt: "asc" },
+    });
+
+    // Balances here come from summing signed quantity ourselves, in
+    // occurredAt order — NOT from the stored balanceAfter snapshots, which
+    // are only meaningful in creation order. A backdated entry (a Goods
+    // Receipt logged today for last Friday's delivery, say) gets its
+    // balanceAfter computed against whatever the balance happened to be at
+    // insert time, not its stated date, so it can't be trusted for a
+    // historical reconstruction — a running sum over signed quantities is
+    // order-independent and always correct.
+    const openingBalance = new Map<string, number>();
+    const closingBalance = new Map<string, number>();
+    type ProductBucket = { qtyByType: Partial<Record<MovementType, number>>; valueByType: Partial<Record<MovementType, number>> };
+    const byProductBucket = new Map<string, ProductBucket>();
+    const typeTotals: Partial<Record<MovementType, { quantity: number; value: number }>> = {};
+    const byDayMap = new Map<string, { purchasesValue: number; salesValue: number; damageValue: number }>();
+
+    for (const m of movements) {
+      const key = `${m.productId}::${m.locationId}`;
+      const qty = Number(m.quantity);
+      const value = m.value != null ? Number(m.value) : 0;
+      const inRange = m.occurredAt >= start;
+
+      const running = (closingBalance.get(key) ?? openingBalance.get(key) ?? 0) + qty;
+      if (!inRange) {
+        openingBalance.set(key, running);
+        continue;
+      }
+      closingBalance.set(key, running);
+
+      const pBucket = byProductBucket.get(m.productId) ?? { qtyByType: {}, valueByType: {} };
+      pBucket.qtyByType[m.type] = (pBucket.qtyByType[m.type] ?? 0) + qty;
+      pBucket.valueByType[m.type] = (pBucket.valueByType[m.type] ?? 0) + value;
+      byProductBucket.set(m.productId, pBucket);
+
+      const t = typeTotals[m.type] ?? { quantity: 0, value: 0 };
+      t.quantity += qty;
+      t.value += value;
+      typeTotals[m.type] = t;
+
+      const dayKey = localDayKey(m.occurredAt);
+      const dBucket = byDayMap.get(dayKey) ?? { purchasesValue: 0, salesValue: 0, damageValue: 0 };
+      if (m.type === "PURCHASE") dBucket.purchasesValue += value;
+      else if (m.type === "SALE") dBucket.salesValue += value;
+      else if (m.type === "DAMAGE_LOSS") dBucket.damageValue += value;
+      byDayMap.set(dayKey, dBucket);
+    }
+
+    // A product carries stock at a location iff it has ever had a movement
+    // there — every key seen in either balance map is exactly that set.
+    const productIds = new Set<string>();
+    const productLocationKeys = new Set([...openingBalance.keys(), ...closingBalance.keys()]);
+    for (const key of productLocationKeys) productIds.add(key.split("::")[0]);
+
+    const products = productIds.size
+      ? await prisma.product.findMany({
+          where: { id: { in: [...productIds] }, tenantId: tid },
+          select: { id: true, name: true, unit: true, unitCost: true, reorderLevel: true, category: { select: { name: true } } },
+        })
+      : [];
+
+    const byProduct = products.map((p) => {
+      let opening = 0;
+      let closing = 0;
+      for (const key of productLocationKeys) {
+        if (!key.startsWith(`${p.id}::`)) continue;
+        opening += openingBalance.get(key) ?? 0;
+        // A key with no in-range movement never entered closingBalance —
+        // its balance simply didn't change, so it's still at its opening.
+        closing += closingBalance.get(key) ?? openingBalance.get(key) ?? 0;
+      }
+      const unitCost = p.unitCost != null ? Number(p.unitCost) : 0;
+      const bucket = byProductBucket.get(p.id) ?? { qtyByType: {}, valueByType: {} };
+      return {
+        productId: p.id,
+        name: p.name,
+        unit: p.unit,
+        category: p.category?.name ?? null,
+        opening,
+        closing,
+        closingValue: closing * unitCost,
+        purchased: bucket.qtyByType.PURCHASE ?? 0,
+        sold: Math.abs(bucket.qtyByType.SALE ?? 0),
+        damaged: Math.abs(bucket.qtyByType.DAMAGE_LOSS ?? 0),
+        adjusted: bucket.qtyByType.ADJUSTMENT ?? 0,
+        reorderLevel: Number(p.reorderLevel),
+        low: closing < Number(p.reorderLevel),
+      };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+
+    const byDay = [...byDayMap.entries()].map(([date, v]) => ({ date, ...v })).sort((a, b) => a.date.localeCompare(b.date));
+
+    const unitCostOf = new Map(products.map((p) => [p.id, p.unitCost != null ? Number(p.unitCost) : 0]));
+    const summary = {
+      openingValue: byProduct.reduce((s, p) => s + p.opening * (unitCostOf.get(p.productId) ?? 0), 0),
+      closingValue: byProduct.reduce((s, p) => s + p.closingValue, 0),
+      purchasesValue: typeTotals.PURCHASE?.value ?? 0,
+      salesValue: typeTotals.SALE?.value ?? 0,
+      damageValue: typeTotals.DAMAGE_LOSS?.value ?? 0,
+      lowStockCount: byProduct.filter((p) => p.low).length,
+    };
+
+    res.json({
+      range: { from: start.toISOString(), to: end.toISOString() },
+      summary,
+      byProduct,
+      byDay,
+      lowStock: byProduct.filter((p) => p.low),
+    });
+  } catch (error) {
+    next(error);
+  }
 });
