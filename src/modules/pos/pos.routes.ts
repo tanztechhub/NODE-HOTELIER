@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 
-import { requireModule, requireAdmin } from "../../middleware/tenantContext.js";
+import { requireModule, requirePermission } from "../../middleware/tenantContext.js";
 import { prisma } from "../../lib/prisma.js";
 import { computeOrderFinancials } from "../../lib/orderTotals.js";
 import { nextTransactionNo } from "../../lib/sequence.js";
@@ -806,7 +806,7 @@ posRouter.patch("/orders/:id/cancel", async (req, res) => {
 /** Admin approves a pending cancellation → CANCELLED. Frees the table, and
  * for an order that had already been served, returns its stock. Blocked if
  * the order has taken any payment (that needs a manual refund first). */
-posRouter.post("/orders/:id/cancel/approve", requireAdmin, async (req, res) => {
+posRouter.post("/orders/:id/cancel/approve", requirePermission("POS_APPROVE_CANCELLATION"), async (req, res) => {
   const id = req.params.id as string;
   const tid = tenantIdFor(req);
   const order = await prisma.posOrder.findFirst({ where: { id, tenantId: tid }, include: orderInclude });
@@ -837,7 +837,7 @@ posRouter.post("/orders/:id/cancel/approve", requireAdmin, async (req, res) => {
 /** Admin rejects a pending cancellation → the order returns to whatever
  * status it was in before the request. The reason and the decision note are
  * kept for the record. */
-posRouter.post("/orders/:id/cancel/reject", requireAdmin, async (req, res) => {
+posRouter.post("/orders/:id/cancel/reject", requirePermission("POS_APPROVE_CANCELLATION"), async (req, res) => {
   const id = req.params.id as string;
   const parsed = rejectCancelSchema.safeParse(req.body ?? {});
   if (!parsed.success) { res.status(400).json({ error: "Invalid request", details: parsed.error.flatten() }); return; }

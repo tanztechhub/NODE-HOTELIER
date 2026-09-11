@@ -7,6 +7,9 @@ import { partialNoDefaults } from "../../lib/zod.js";
 export const rolesRouter = Router();
 
 const sections = ["OVERVIEW", "RECEPTION", "HOUSEKEEPING", "SALES", "KITCHEN", "SERVICE_CENTER", "INVENTORY", "TEAM", "FINANCE", "REPORTS", "SYSTEM"] as const;
+// Action-level capabilities (enforced server-side by requirePermission) —
+// separate from `allowedSections`, which only hides sidebar/routes.
+const permissions = ["POS_VIEW_ALL_ORDERS", "POS_APPROVE_COUNTER", "POS_APPROVE_CANCELLATION"] as const;
 
 const blankToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 
@@ -14,6 +17,7 @@ const createSchema = z.object({
   name: z.string().trim().min(1).max(60),
   description: z.preprocess(blankToUndefined, z.string().trim().max(200).optional()),
   allowedSections: z.array(z.enum(sections)).default([]),
+  permissions: z.array(z.enum(permissions)).default([]),
 });
 const updateSchema = partialNoDefaults(createSchema);
 
@@ -28,6 +32,7 @@ const publicFields = {
   description: true,
   isSystemRole: true,
   allowedSections: true,
+  permissions: true,
   createdAt: true,
   updatedAt: true,
   _count: { select: { employees: true } },

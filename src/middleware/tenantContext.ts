@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import type { ModuleKey } from "@prisma/client";
+import type { ModuleKey, Permission } from "@prisma/client";
 
 import { prisma } from "../lib/prisma.js";
 
@@ -50,6 +50,39 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
       next();
     })
     .catch(next);
+}
+
+/**
+ * Middleware factory: the real, generic permission check — resolves the
+ * acting employee's role and 403s unless that role's `permissions` array
+ * (Roles & Permissions ▸ Capabilities) includes the one named here. A
+ * Super Admin always passes, so the top of every tenant's org chart can
+ * never lock itself out even before it's granted anything explicitly.
+ * This is what `allowedSections` never was: allowedSections only hides
+ * sidebar/routes client-side, this actually rejects the request.
+ */
+export function requirePermission(permission: Permission) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.tenantId || !req.userId) {
+      res.status(401).json({ error: "Sign in required" });
+      return;
+    }
+    prisma.employee
+      .findFirst({
+        where: { id: req.userId, tenantId: req.tenantId, status: "ACTIVE" },
+        select: { role: { select: { name: true, permissions: true } } },
+      })
+      .then((employee) => {
+        const isSuperAdmin = employee?.role?.name === "Super Admin";
+        const granted = employee?.role?.permissions.includes(permission) ?? false;
+        if (!employee || !(isSuperAdmin || granted)) {
+          res.status(403).json({ error: "You don't have permission to do this" });
+          return;
+        }
+        next();
+      })
+      .catch(next);
+  };
 }
 
 /**

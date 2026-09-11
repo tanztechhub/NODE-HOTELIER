@@ -184,6 +184,19 @@ enum PermissionSection {
   SYSTEM
 }
 
+// Fine-grained action-level capabilities, enforced server-side by
+// requirePermission() — separate from PermissionSection, which only hides
+// sidebar/routes client-side. Extend this list as new gated actions need
+// one; a role's `permissions` array is empty by default (grants nothing).
+enum Permission {
+  // See every order at a location, not just ones you created yourself.
+  POS_VIEW_ALL_ORDERS
+  // Mark a counter-routed order as served (the counter's approval step).
+  POS_APPROVE_COUNTER
+  // Approve or reject a waiter's cancellation request.
+  POS_APPROVE_CANCELLATION
+}
+
 enum EmploymentType {
   FULL_TIME
   PART_TIME
@@ -1905,6 +1918,10 @@ model Role {
   description     String?
   isSystemRole    Boolean             @default(false)
   allowedSections PermissionSection[] @default([])
+  // Action-level capabilities this role grants, enforced server-side.
+  // Empty = none — a role only sees sections via `allowedSections`, it
+  // can't yet DO anything gated until explicitly given a permission here.
+  permissions     Permission[]        @default([])
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
   employees       Employee[]

@@ -14,15 +14,19 @@ export const ALL_SECTIONS = [
   "SERVICE_CENTER", "INVENTORY", "TEAM", "FINANCE", "REPORTS", "SYSTEM",
 ] as const;
 
+// Action-level capabilities (enforced server-side) — separate from the
+// sections above, which only hide sidebar/routes client-side.
+export const ALL_PERMISSIONS = ["POS_VIEW_ALL_ORDERS", "POS_APPROVE_COUNTER", "POS_APPROVE_CANCELLATION"] as const;
+
 export const SYSTEM_ROLES = [
-  { name: "Super Admin", description: "Full access to every section of the workspace.", allowedSections: ALL_SECTIONS },
-  { name: "Manager", description: "Oversees daily operations across the property.", allowedSections: ALL_SECTIONS },
-  { name: "Receptionist", description: "Front desk check-in, reservations, and guest billing.", allowedSections: ["OVERVIEW", "RECEPTION"] },
-  { name: "Chef", description: "Kitchen orders, menu, and recipes.", allowedSections: ["OVERVIEW", "KITCHEN"] },
-  { name: "Waiter", description: "Point of sale, tables, and orders.", allowedSections: ["OVERVIEW", "SALES"] },
-  { name: "Housekeeping", description: "Room tasks and cleanliness tracking.", allowedSections: ["OVERVIEW", "HOUSEKEEPING"] },
-  { name: "Storekeeper", description: "Inventory, stock, and supplier records.", allowedSections: ["OVERVIEW", "INVENTORY"] },
-  { name: "Accountant", description: "Finance, expenses, and reports.", allowedSections: ["OVERVIEW", "FINANCE", "REPORTS"] },
+  { name: "Super Admin", description: "Full access to every section of the workspace.", allowedSections: ALL_SECTIONS, permissions: ALL_PERMISSIONS },
+  { name: "Manager", description: "Oversees daily operations across the property.", allowedSections: ALL_SECTIONS, permissions: ALL_PERMISSIONS },
+  { name: "Receptionist", description: "Front desk check-in, reservations, and guest billing.", allowedSections: ["OVERVIEW", "RECEPTION"], permissions: [] },
+  { name: "Chef", description: "Kitchen orders, menu, and recipes.", allowedSections: ["OVERVIEW", "KITCHEN"], permissions: [] },
+  { name: "Waiter", description: "Point of sale, tables, and orders.", allowedSections: ["OVERVIEW", "SALES"], permissions: [] },
+  { name: "Housekeeping", description: "Room tasks and cleanliness tracking.", allowedSections: ["OVERVIEW", "HOUSEKEEPING"], permissions: [] },
+  { name: "Storekeeper", description: "Inventory, stock, and supplier records.", allowedSections: ["OVERVIEW", "INVENTORY"], permissions: [] },
+  { name: "Accountant", description: "Finance, expenses, and reports.", allowedSections: ["OVERVIEW", "FINANCE", "REPORTS"], permissions: [] },
 ] as const;
 
 const SYSTEM_PAYMENT_METHODS = [
@@ -93,8 +97,8 @@ export async function provisionTenantBootstrap(
   for (const role of SYSTEM_ROLES) {
     await tx.role.upsert({
       where: { tenantId_name: { tenantId, name: role.name } },
-      update: { description: role.description, allowedSections: [...role.allowedSections], isSystemRole: true },
-      create: { tenantId, name: role.name, description: role.description, allowedSections: [...role.allowedSections], isSystemRole: true },
+      update: { description: role.description, allowedSections: [...role.allowedSections], permissions: [...role.permissions], isSystemRole: true },
+      create: { tenantId, name: role.name, description: role.description, allowedSections: [...role.allowedSections], permissions: [...role.permissions], isSystemRole: true },
     });
   }
 
