@@ -332,6 +332,7 @@ model Tenant {
   purchases             Purchase[]
   purchaseRequisitions  PurchaseRequisition[]
   goodsReceipts         GoodsReceipt[]
+  supplierPayments      SupplierPayment[]
   serviceCenterServices ServiceCenterService[]
   serviceProviders      ServiceProvider[]
   providerSchedules     ProviderSchedule[]
@@ -849,6 +850,7 @@ model PaymentMethod {
   assetMovements     AssetMovement[]
   membershipPayments MembershipPayment[]
   appointments       Appointment[]
+  supplierPayments   SupplierPayment[]
 
   @@unique([tenantId, code])
   @@unique([tenantId, name])
@@ -870,6 +872,7 @@ enum TransactionSource {
   POS_SALE
   EXPENSE
   ASSET_PURCHASE
+  SUPPLIER_PAYMENT
 }
 
 // A single, unified ledger of every payment actually made across the
@@ -890,6 +893,8 @@ model Transaction {
   reference       String?
   customerId      String?
   customer        Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  supplierId      String?
+  supplier        Supplier?            @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   locationId      String?
   location        Location?            @relation(fields: [locationId], references: [id], onDelete: SetNull)
   employeeId      String?
@@ -1037,8 +1042,9 @@ model Supplier {
   paymentTerms      String?
   notes             String?
   // Running account balance with this supplier — what the property owes
-  // them (positive) or has in credit (negative). Not wired to anything yet;
-  // Purchases / supplier payments will maintain it later.
+  // them (positive) or has in credit (negative). Goods Received only ever
+  // increases it; SupplierPayment (below) is the only thing that decreases
+  // it — that asymmetry is intentional, it's an accounts-payable balance.
   balance           Decimal               @default(0) @db.Decimal(12, 2)
   isActive          Boolean               @default(true)
   createdBy         String?
@@ -1049,9 +1055,37 @@ model Supplier {
   updatedAt         DateTime              @updatedAt
   purchases         Purchase[]
   requisitions      PurchaseRequisition[]
+  payments          SupplierPayment[]
+  transactions      Transaction[]
 
   @@unique([tenantId, name])
   @@index([tenantId, isActive])
+}
+
+// A real cash payment made TO a supplier — the only thing that ever
+// decreases Supplier.balance (GoodsReceipt only ever increases it). Mirrors
+// Expense: created once, writes a Transaction as a side effect, never
+// edited or deleted — corrections are a new payment, not a rewrite.
+model SupplierPayment {
+  id                String         @id @default(cuid())
+  tenantId          String
+  tenant            Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  paymentNo         String
+  supplierId        String
+  supplier          Supplier       @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  amount            Decimal        @db.Decimal(12, 2)
+  paymentMethodId   String?
+  paymentMethod     PaymentMethod? @relation(fields: [paymentMethodId], references: [id], onDelete: SetNull)
+  reference         String?
+  note              String?
+  paidAt            DateTime       @default(now())
+  createdBy         String?
+  createdByEmployee Employee?      @relation("SupplierPaymentCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAt         DateTime       @default(now())
+
+  @@unique([tenantId, paymentNo])
+  @@index([tenantId, supplierId])
+  @@index([tenantId, paidAt])
 }
 
 enum PurchaseRequisitionStatus {
@@ -1959,6 +1993,7 @@ model Employee {
   createdPurchases         Purchase[]            @relation("PurchaseCreatedBy")
   updatedPurchases         Purchase[]            @relation("PurchaseUpdatedBy")
   createdGoodsReceipts     GoodsReceipt[]        @relation("GoodsReceiptCreatedBy")
+  createdSupplierPayments  SupplierPayment[]     @relation("SupplierPaymentCreatedBy")
   createdRequisitions      PurchaseRequisition[] @relation("RequisitionCreatedBy")
   updatedRequisitions      PurchaseRequisition[] @relation("RequisitionUpdatedBy")
   reviewedRequisitions     PurchaseRequisition[] @relation("RequisitionReviewedBy")

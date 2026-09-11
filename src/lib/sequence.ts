@@ -55,3 +55,7 @@ export async function nextRequisitionNo(tenantId: string): Promise<string> {
 export async function nextGoodsReceiptNo(tenantId: string): Promise<string> {
   return nextSequenceNo(tenantId, "goodsreceipt", "GRN", 6);
 }
+
+export async function nextSupplierPaymentNo(tenantId: string): Promise<string> {
+  return nextSequenceNo(tenantId, "supplierpayment", "SPMT", 6);
+}

@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
 import { partialNoDefaults } from "../../lib/zod.js";
+import { nextSupplierPaymentNo, nextTransactionNo } from "../../lib/sequence.js";
 
 // Suppliers/vendors the property buys stock from. A plain definitional
 // lookup for now — Purchases / Goods Received will consume it later — so
@@ -95,6 +96,94 @@ suppliersRouter.patch("/:id", async (req, res, next) => {
     res.json({ supplier });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") { res.status(409).json({ error: "A supplier with this name already exists" }); return; }
+    next(error);
+  }
+});
+
+const paymentSchema = z.object({
+  amount: z.coerce.number().positive(),
+  paymentMethodId: z.string().trim().min(1),
+  reference: optionalText(120),
+  note: optionalText(500),
+  paidAt: z.preprocess(blankToUndefined, z.coerce.date().optional()),
+});
+
+const paymentInclude = {
+  paymentMethod: { select: { id: true, name: true, requiresReference: true } },
+  createdByEmployee: { select: { id: true, firstName: true, lastName: true } },
+} as const;
+
+async function resolvePaymentMethod(tid: string, paymentMethodId: string, reference: string | undefined) {
+  const method = await prisma.paymentMethod.findFirst({ where: { id: paymentMethodId, tenantId: tid, isActive: true } });
+  if (!method) throw Object.assign(new Error("Choose a valid, active payment method"), { status: 400 });
+  if (method.requiresReference && !reference) throw Object.assign(new Error(`${method.name} requires a reference number`), { status: 400 });
+  return method;
+}
+
+/** Payment history for one supplier — the only thing that ever brings
+ * Supplier.balance back down (Goods Received only ever raises it). */
+suppliersRouter.get("/:id/payments", async (req, res, next) => {
+  try {
+    const tid = tenantId(req);
+    const supplier = await prisma.supplier.findFirst({ where: { id: req.params.id, tenantId: tid }, select: { id: true } });
+    if (!supplier) { res.status(404).json({ error: "Supplier not found" }); return; }
+    const payments = await prisma.supplierPayment.findMany({ where: { supplierId: supplier.id, tenantId: tid }, include: paymentInclude, orderBy: { paidAt: "desc" } });
+    res.json({ payments });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** Records real cash paid to a supplier — decrements balance and writes a
+ * Transaction (the single unified cash ledger), same as Expense does. */
+suppliersRouter.post("/:id/payments", async (req, res, next) => {
+  const data = paymentSchema.safeParse(req.body);
+  if (!data.success) { res.status(400).json({ error: "Invalid payment", details: data.error.flatten() }); return; }
+  const tid = tenantId(req);
+  try {
+    const supplier = await prisma.supplier.findFirst({ where: { id: req.params.id, tenantId: tid } });
+    if (!supplier) { res.status(404).json({ error: "Supplier not found" }); return; }
+    await resolvePaymentMethod(tid, data.data.paymentMethodId, data.data.reference);
+
+    const paymentNo = await nextSupplierPaymentNo(tid);
+    const transactionNo = await nextTransactionNo(tid);
+    const payment = await prisma.$transaction(async (tx) => {
+      const created = await tx.supplierPayment.create({
+        data: {
+          tenantId: tid,
+          paymentNo,
+          supplierId: supplier.id,
+          amount: data.data.amount,
+          paymentMethodId: data.data.paymentMethodId,
+          reference: data.data.reference,
+          note: data.data.note,
+          createdBy: req.userId,
+          ...(data.data.paidAt ? { paidAt: data.data.paidAt } : {}),
+        },
+        include: paymentInclude,
+      });
+      await tx.supplier.update({ where: { id: supplier.id }, data: { balance: { decrement: data.data.amount } } });
+      await tx.transaction.create({
+        data: {
+          tenantId: tid,
+          transactionNo,
+          direction: "OUT",
+          source: "SUPPLIER_PAYMENT",
+          amount: data.data.amount,
+          paymentMethodId: data.data.paymentMethodId,
+          reference: data.data.reference,
+          supplierId: supplier.id,
+          employeeId: req.userId,
+          description: `Payment to ${supplier.name}`,
+          sourceRefId: created.id,
+        },
+      });
+      return created;
+    });
+    const updatedSupplier = await prisma.supplier.findUniqueOrThrow({ where: { id: supplier.id }, include: supplierInclude });
+    res.status(201).json({ payment, supplier: updatedSupplier });
+  } catch (error) {
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
     next(error);
   }
 });

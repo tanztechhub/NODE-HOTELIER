@@ -13,7 +13,7 @@ const optionalText = (max: number) => z.preprocess(blankToUndefined, z.string().
 
 const listSchema = z.object({
   direction: z.enum(["IN", "OUT"]).optional(),
-  source: z.enum(["FOLIO_DEPOSIT", "FOLIO_SETTLEMENT", "POS_SALE", "EXPENSE", "ASSET_PURCHASE"]).optional(),
+  source: z.enum(["FOLIO_DEPOSIT", "FOLIO_SETTLEMENT", "POS_SALE", "EXPENSE", "ASSET_PURCHASE", "SUPPLIER_PAYMENT"]).optional(),
   paymentMethodId: z.string().trim().min(1).optional(),
   search: optionalText(120),
   from: z.preprocess(blankToUndefined, z.coerce.date().optional()),
@@ -28,6 +28,7 @@ const tenantId = (req: { tenantId?: string }) => {
 const transactionInclude = {
   paymentMethod: { select: { id: true, name: true } },
   customer: { select: { id: true, firstName: true, lastName: true } },
+  supplier: { select: { id: true, name: true } },
   location: { select: { id: true, name: true } },
   employee: { select: { id: true, firstName: true, lastName: true } },
 } as const;
@@ -53,6 +54,7 @@ transactionsRouter.get("/", async (req, res) => {
               { description: { contains: search, mode: "insensitive" } },
               { customer: { firstName: { contains: search, mode: "insensitive" } } },
               { customer: { lastName: { contains: search, mode: "insensitive" } } },
+              { supplier: { name: { contains: search, mode: "insensitive" } } },
             ],
           }
         : {}),
