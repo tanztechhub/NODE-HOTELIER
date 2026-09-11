@@ -337,12 +337,27 @@ async function reconcileOrderCredit(
   });
 }
 
+/** Whether this employee should see every order, not just the ones they
+ * rang up themselves — either explicitly granted, or implied by holding an
+ * approval capability (approving counter orders/cancellations for everyone
+ * else obviously requires being able to see everyone else's orders too). */
+async function canSeeAllOrders(tid: string, userId: string | undefined): Promise<boolean> {
+  const [viewAll, approveCounter, approveCancellation] = await Promise.all([
+    hasPermission(tid, userId, "POS_VIEW_ALL_ORDERS"),
+    hasPermission(tid, userId, "POS_APPROVE_COUNTER"),
+    hasPermission(tid, userId, "POS_APPROVE_CANCELLATION"),
+  ]);
+  return viewAll || approveCounter || approveCancellation;
+}
+
 // A fixed-location employee only ever sees their own location's orders; a
 // floating one (a manager) sees everything by default — unlike ringing up a
 // live sale, browsing order history isn't blocked by an unclear location, so
 // an optional ?locationId= is offered instead of forcing a pick. Orders
 // record where they actually happened, so this is an exact match — not the
 // "unallocated = everywhere" convention used for menu items/tables.
+// On top of location, an employee without canSeeAllOrders only sees orders
+// they themselves rang up — a waiter's list, a counter/manager's everyone's.
 posRouter.get("/orders", async (req, res) => {
   const query = z.object({
     status: z.enum(["OPEN", "PREPARING", "READY", "SERVED", "COMPLETED", "CANCELLED", "PENDING_CANCELLATION"]).optional(),
@@ -354,11 +369,17 @@ posRouter.get("/orders", async (req, res) => {
   }).safeParse(req.query);
   if (!query.success) { res.status(400).json({ error: "Invalid filters" }); return; }
   const tid = tenantIdFor(req);
-  const fixedLocationId = await employeeLocationId(tid, req.userId);
+  const [fixedLocationId, canSeeAll] = await Promise.all([employeeLocationId(tid, req.userId), canSeeAllOrders(tid, req.userId)]);
   const effectiveLocationId = fixedLocationId ?? query.data.locationId ?? null;
   const [orders, tax] = await Promise.all([
     prisma.posOrder.findMany({
-      where: { tenantId: tid, ...(query.data.status ? { status: query.data.status } : {}), ...(query.data.channel ? { channel: query.data.channel } : {}), ...(effectiveLocationId ? { locationId: effectiveLocationId } : {}) },
+      where: {
+        tenantId: tid,
+        ...(query.data.status ? { status: query.data.status } : {}),
+        ...(query.data.channel ? { channel: query.data.channel } : {}),
+        ...(effectiveLocationId ? { locationId: effectiveLocationId } : {}),
+        ...(canSeeAll ? {} : { createdBy: req.userId ?? "__unauthenticated__" }),
+      },
       include: orderInclude,
       orderBy: { createdAt: "desc" },
       ...(query.data.limit ? { take: query.data.limit } : {}),
@@ -368,11 +389,18 @@ posRouter.get("/orders", async (req, res) => {
   res.status(200).json({ orders: orders.map((order) => withFinancials(order, tax)) });
 });
 
-/** POS notification queue: Kitchen places finished orders here for serving. */
+/** POS notification queue: Kitchen places finished orders here for serving.
+ * Same ownership scoping as the list above — a waiter is only pinged for
+ * their own tickets going READY, not the whole property's. */
 posRouter.get("/orders/ready", async (req, res) => {
   const tid = tenantIdFor(req);
+  const canSeeAll = await canSeeAllOrders(tid, req.userId);
   const [orders, tax] = await Promise.all([
-    prisma.posOrder.findMany({ where: { tenantId: tid, status: "READY" }, include: orderInclude, orderBy: { readyAt: "asc" } }),
+    prisma.posOrder.findMany({
+      where: { tenantId: tid, status: "READY", ...(canSeeAll ? {} : { createdBy: req.userId ?? "__unauthenticated__" }) },
+      include: orderInclude,
+      orderBy: { readyAt: "asc" },
+    }),
     taxSettingsFor(tid),
   ]);
   res.status(200).json({ notifications: orders.map((order) => ({ type: "ORDER_READY", message: `Order #${order.orderNumber} is ready to serve`, order: withFinancials(order, tax) })) });
@@ -442,6 +470,7 @@ posRouter.post("/orders", async (req, res) => {
           locationId: effectiveLocationId,
           customerId,
           reservationId: billToReservationId,
+          createdBy: req.userId,
           notes: parsed.data.notes,
           discount: parsed.data.discount,
           status: instantServe ? "SERVED" : startsAtCounter ? "READY" : "OPEN",
@@ -1219,6 +1248,7 @@ posRouter.post("/retail-orders", async (req, res) => {
           servedAt: new Date(),
           locationId: effectiveLocationId,
           customerId,
+          createdBy: req.userId,
           notes: parsed.data.notes,
           discount: parsed.data.discount,
           items: { create: itemsCreate },

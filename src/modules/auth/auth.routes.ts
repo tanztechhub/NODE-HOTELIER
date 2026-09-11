@@ -13,7 +13,7 @@ const loginSchema = z.object({
   pin: z.string().trim().min(1),
 });
 
-const roleSelect = { select: { id: true, name: true, allowedSections: true } } as const;
+const roleSelect = { select: { id: true, name: true, allowedSections: true, permissions: true } } as const;
 const locationsSelect = { select: { id: true, name: true } } as const;
 const defaultLocationSelect = { select: { id: true, name: true } } as const;
 const departmentSelect = { select: { id: true, name: true } } as const;
@@ -33,7 +33,7 @@ function bearerToken(req: { header(name: string): string | undefined }): string 
 function publicEmployee(employee: {
   id: string; firstName: string; lastName: string; employeeCode: string; jobTitle: string;
   department: { id: string; name: string } | null;
-  role: { id: string; name: string; allowedSections: string[] } | null;
+  role: { id: string; name: string; allowedSections: string[]; permissions: string[] } | null;
   locations: { id: string; name: string }[];
   defaultLocation: { id: string; name: string } | null;
 }) {

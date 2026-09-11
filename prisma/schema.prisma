@@ -1535,6 +1535,12 @@ model PosOrder {
   customerId         String?
   tableId            String?
   locationId         String?
+  // The employee who rang this order up. Plain id, no relation — same
+  // convention as cancelRequestedBy/cancelDecidedBy below — so a waiter's
+  // order list can be scoped to their own (GET /orders restricts to
+  // createdBy unless the caller holds POS_VIEW_ALL_ORDERS or an approval
+  // capability). Null on anything created before this field existed.
+  createdBy          String?
   orderNumber        Int
   status             PosOrderStatus        @default(OPEN)
   channel            PosOrderChannel       @default(FOOD)
