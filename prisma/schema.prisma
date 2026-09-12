@@ -195,6 +195,14 @@ enum Permission {
   POS_APPROVE_COUNTER
   // Approve or reject a waiter's cancellation request.
   POS_APPROVE_CANCELLATION
+  // Manage shift templates and employees' shift rotations/overrides.
+  SHIFT_MANAGE
+  // Mark/edit the daily attendance register.
+  ATTENDANCE_MANAGE
+  // Log in and use the system regardless of shift hours — for roles (owner,
+  // manager, accountant, ...) that aren't shift workers. A Super Admin
+  // already bypasses every permission check, shift enforcement included.
+  SHIFT_EXEMPT
 }
 
 enum EmploymentType {
@@ -340,6 +348,10 @@ model Tenant {
   memberships           Membership[]
   membershipPayments    MembershipPayment[]
   appointments          Appointment[]
+  shiftTemplates        ShiftTemplate[]
+  shiftRotations        EmployeeShiftRotation[]
+  shiftOverrides        EmployeeShiftOverride[]
+  attendanceRecords     AttendanceRecord[]
 }
 
 enum CustomerType {
@@ -1998,6 +2010,9 @@ model Employee {
   updatedRequisitions      PurchaseRequisition[] @relation("RequisitionUpdatedBy")
   reviewedRequisitions     PurchaseRequisition[] @relation("RequisitionReviewedBy")
   inventoryMovements       InventoryMovement[]
+  shiftRotation            EmployeeShiftRotation?
+  shiftOverrides           EmployeeShiftOverride[]
+  attendanceRecords        AttendanceRecord[]
 
   // Compensation
   salaryType        SalaryType            @default(MONTHLY)
@@ -2028,6 +2043,108 @@ model Employee {
   @@index([tenantId, status])
   @@index([supervisorId])
   @@index([roleId])
+}
+
+// A named work-hours window (e.g. "Day Shift" 06:00-14:00, "Night Shift"
+// 22:00-06:00 — endTime earlier than startTime means it crosses midnight).
+// Grace minutes give a little slack either side before access is blocked.
+// Times are interpreted in Africa/Nairobi local time (this product is
+// Kenya-only today, same assumption the tax rules already make).
+model ShiftTemplate {
+  id                 String   @id @default(cuid())
+  tenantId           String
+  tenant             Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name               String
+  startTime          String
+  endTime            String
+  graceMinutesBefore Int      @default(15)
+  graceMinutesAfter  Int      @default(15)
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  rotationSlots RotationSlot[]
+  overrides     EmployeeShiftOverride[]
+
+  @@unique([tenantId, name])
+}
+
+// An employee's repeating shift pattern — e.g. 7 days on Day Shift then 7
+// on Night Shift, repeating forever from anchorDate. One per employee; an
+// employee with no rotation at all is unrestricted (no enforcement).
+model EmployeeShiftRotation {
+  id              String   @id @default(cuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employeeId      String   @unique
+  employee        Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  anchorDate      DateTime @db.Date
+  cycleLengthDays Int
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  slots RotationSlot[]
+}
+
+// One stretch of a rotation cycle: days [position, position+days) of the
+// cycle use this shift. Ordered by `position`; a rotation's slots' `days`
+// sum to its cycleLengthDays.
+model RotationSlot {
+  id              String                @id @default(cuid())
+  rotationId      String
+  rotation        EmployeeShiftRotation @relation(fields: [rotationId], references: [id], onDelete: Cascade)
+  shiftTemplateId String
+  shiftTemplate   ShiftTemplate         @relation(fields: [shiftTemplateId], references: [id], onDelete: Restrict)
+  position        Int
+  days            Int
+
+  @@index([rotationId])
+}
+
+// A one-off exception to an employee's computed rotation for a single date
+// — swapping someone's shift for a day without disturbing their ongoing
+// pattern. shiftTemplateId null means "unrestricted that day".
+model EmployeeShiftOverride {
+  id              String         @id @default(cuid())
+  tenantId        String
+  tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employeeId      String
+  employee        Employee       @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date            DateTime       @db.Date
+  shiftTemplateId String?
+  shiftTemplate   ShiftTemplate? @relation(fields: [shiftTemplateId], references: [id], onDelete: SetNull)
+  reason          String?
+  createdAt       DateTime       @default(now())
+
+  @@unique([employeeId, date])
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  ON_LEAVE
+}
+
+// Daily attendance register — marked manually (there's no clock-in device),
+// one row per employee per calendar day. Kept indefinitely; retrieval is
+// just a month/year filter, no archiving needed.
+model AttendanceRecord {
+  id         String           @id @default(cuid())
+  tenantId   String
+  tenant     Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employeeId String
+  employee   Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date       DateTime         @db.Date
+  status     AttendanceStatus
+  notes      String?
+  // Plain id, no relation — same convention as PosOrder.createdBy.
+  markedBy   String?
+  markedAt   DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@unique([employeeId, date])
+  @@index([tenantId, date])
 }
 
 model Role {

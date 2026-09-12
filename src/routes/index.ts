@@ -36,12 +36,21 @@ import { tenantRouter } from "../modules/tenant/tenant.routes.js";
 import { rolesRouter } from "../modules/roles/roles.routes.js";
 import { authRouter } from "../modules/auth/auth.routes.js";
 import { serviceCenterRouter } from "../modules/service-center/service-center.routes.js";
+import { shiftsRouter } from "../modules/shifts/shifts.routes.js";
+import { attendanceRouter } from "../modules/attendance/attendance.routes.js";
+import { enforceShiftAccess } from "../middleware/enforceShiftAccess.js";
 
 export const router = Router();
 
 router.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
 });
+
+// Mounted before the shift-access gate below: login has its own explicit
+// shift check before issuing a session, and /me + /logout must stay
+// reachable even for an employee the gate would otherwise block.
+router.use("/auth", authRouter);
+router.use(enforceShiftAccess);
 
 router.use("/pos", posRouter);
 router.use("/kitchen", kitchenRouter);
@@ -77,5 +86,6 @@ router.use("/departments", departmentsRouter);
 router.use("/business-profile", businessProfileRouter);
 router.use("/tenant", tenantRouter);
 router.use("/roles", rolesRouter);
-router.use("/auth", authRouter);
 router.use("/service-center", serviceCenterRouter);
+router.use("/shifts", shiftsRouter);
+router.use("/attendance", attendanceRouter);

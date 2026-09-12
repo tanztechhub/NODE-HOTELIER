@@ -3,6 +3,8 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
 import { verifySecret } from "../../lib/hash.js";
+import { hasPermission } from "../../middleware/tenantContext.js";
+import { resolveShiftFor, isWithinShift } from "../../lib/shifts.js";
 
 export const authRouter = Router();
 
@@ -61,6 +63,14 @@ authRouter.post("/login", async (req, res, next) => {
     if (!employee || employee.status !== "ACTIVE" || !verifySecret(data.data.pin, employee.pin)) {
       res.status(401).json({ error: "Incorrect employee code or PIN" });
       return;
+    }
+    const exempt = await hasPermission(tenantId(req), employee.id, "SHIFT_EXEMPT");
+    if (!exempt) {
+      const shift = await resolveShiftFor(tenantId(req), employee.id);
+      if (shift && !isWithinShift(shift)) {
+        res.status(403).json({ error: `Outside your shift hours (${shift.name}, ${shift.startTime}–${shift.endTime}). You can sign in once your shift starts.`, code: "OUTSIDE_SHIFT" });
+        return;
+      }
     }
     const token = randomBytes(32).toString("hex");
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
