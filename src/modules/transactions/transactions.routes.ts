@@ -15,6 +15,7 @@ const listSchema = z.object({
   direction: z.enum(["IN", "OUT"]).optional(),
   source: z.enum(["FOLIO_DEPOSIT", "FOLIO_SETTLEMENT", "POS_SALE", "EXPENSE", "ASSET_PURCHASE", "SUPPLIER_PAYMENT"]).optional(),
   paymentMethodId: z.string().trim().min(1).optional(),
+  locationId: z.string().trim().min(1).optional(),
   search: optionalText(120),
   from: z.preprocess(blankToUndefined, z.coerce.date().optional()),
   to: z.preprocess(blankToUndefined, z.coerce.date().optional()),
@@ -40,7 +41,7 @@ const transactionInclude = {
 transactionsRouter.get("/", async (req, res) => {
   const query = listSchema.safeParse(req.query);
   if (!query.success) { res.status(400).json({ error: "Invalid transaction filters", details: query.error.flatten() }); return; }
-  const { direction, source, paymentMethodId, search, from, to, limit } = query.data;
+  const { direction, source, paymentMethodId, locationId, search, from, to, limit } = query.data;
   const tid = tenantId(req);
 
   const where = {
@@ -48,6 +49,7 @@ transactionsRouter.get("/", async (req, res) => {
     ...(direction ? { direction } : {}),
     ...(source ? { source } : {}),
     ...(paymentMethodId ? { paymentMethodId } : {}),
+    ...(locationId ? { locationId } : {}),
     ...(from || to ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
     ...(search
       ? {
