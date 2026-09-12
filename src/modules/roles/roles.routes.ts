@@ -74,9 +74,17 @@ rolesRouter.patch("/:id", async (req, res, next) => {
   const data = updateSchema.safeParse(req.body);
   if (!data.success) { res.status(400).json({ error: "Invalid role", details: data.error.flatten() }); return; }
   try {
-    const updated = await prisma.role.updateMany({ where: { id: req.params.id, tenantId: tenantId(req) }, data: data.data });
-    if (!updated.count) { res.status(404).json({ error: "Role not found" }); return; }
-    const role = await prisma.role.findUniqueOrThrow({ where: { id: req.params.id }, select: publicFields });
+    const existing = await prisma.role.findFirst({ where: { id: req.params.id, tenantId: tenantId(req) } });
+    if (!existing) { res.status(404).json({ error: "Role not found" }); return; }
+    // A system role's name is load-bearing — requireAdmin/isSuperAdmin
+    // (tenantContext.ts) and the initial-seed lookup (tenantBootstrap.ts)
+    // all key off "Super Admin"/"Manager" by name, not id. Its
+    // capabilities/sections can still be tuned, just not its identity.
+    if (existing.isSystemRole && data.data.name !== undefined && data.data.name !== existing.name) {
+      res.status(400).json({ error: "System roles can't be renamed" });
+      return;
+    }
+    const role = await prisma.role.update({ where: { id: existing.id }, data: data.data, select: publicFields });
     res.json({ role: serialize(role) });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") { res.status(409).json({ error: "A role with this name already exists" }); return; }
