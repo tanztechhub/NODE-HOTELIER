@@ -14,6 +14,9 @@ addonsRouter.use(requireModule("POS"));
 const blankToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 const blankToNull = (v: unknown) => (v === "" || v == null ? null : v);
 const optionalText = (max: number) => z.preprocess(blankToUndefined, z.string().trim().max(max).optional());
+// null clears the link / quantity — same convention as MenuItem/MenuItemVariant.
+const nullableId = z.preprocess(blankToNull, z.string().trim().min(1).nullable());
+const nullableQty = z.preprocess(blankToNull, z.coerce.number().positive().max(9_999_999).nullable());
 
 const createSchema = z.object({
   name: z.string().trim().min(1).max(80),
@@ -23,6 +26,11 @@ const createSchema = z.object({
   imageUrl: optionalText(2000),
   // null = uncategorised (shows only under "All" in the POS picker).
   menuCategoryId: z.preprocess(blankToNull, z.string().cuid().nullable()).optional(),
+  // Optional stock link: selling one unit of this add-on consumes
+  // stockQtyPerUnit of stockProductId — e.g. "Extra Red Bull" consuming 1
+  // can. Both null = no stock impact (a free garnish, a service charge).
+  stockProductId: nullableId.optional(),
+  stockQtyPerUnit: nullableQty.optional(),
   isActive: z.boolean().default(true),
 });
 const updateSchema = partialNoDefaults(createSchema);
@@ -41,6 +49,9 @@ const addonFields = {
   imageUrl: true,
   menuCategoryId: true,
   menuCategory: { select: { id: true, name: true } },
+  stockProductId: true,
+  stockQtyPerUnit: true,
+  stockProduct: { select: { id: true, name: true } },
   isActive: true,
   createdAt: true,
   updatedAt: true,
@@ -58,6 +69,12 @@ async function assertCategory(tid: string, menuCategoryId: string | null | undef
   if (!menuCategoryId) return;
   const found = await prisma.menuCategory.findFirst({ where: { id: menuCategoryId, tenantId: tid }, select: { id: true } });
   if (!found) throw Object.assign(new Error("Selected category was not found"), { status: 400 });
+}
+
+async function assertProduct(tid: string, productId: string | null | undefined) {
+  if (!productId) return;
+  const found = await prisma.product.findFirst({ where: { id: productId, tenantId: tid }, select: { id: true } });
+  if (!found) throw Object.assign(new Error("Selected product was not found"), { status: 400 });
 }
 
 addonsRouter.get("/", async (req, res, next) => {
@@ -105,6 +122,7 @@ addonsRouter.post("/", async (req, res, next) => {
   try {
     await assertSkuFree(tid, data.data.sku);
     await assertCategory(tid, data.data.menuCategoryId);
+    await assertProduct(tid, data.data.stockProductId);
     const addon = await prisma.addon.create({ data: { tenantId: tid, ...data.data }, select: addonFields });
     res.status(201).json({ addon });
   } catch (error) {
@@ -123,6 +141,7 @@ addonsRouter.patch("/:id", async (req, res, next) => {
     if (!existing) { res.status(404).json({ error: "Add-on not found" }); return; }
     await assertSkuFree(tid, data.data.sku, existing.id);
     await assertCategory(tid, data.data.menuCategoryId);
+    await assertProduct(tid, data.data.stockProductId);
     const addon = await prisma.addon.update({ where: { id: existing.id }, data: data.data, select: addonFields });
     res.json({ addon });
   } catch (error) {

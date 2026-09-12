@@ -83,7 +83,10 @@ async function resolveMenuLines(tid: string, lines: OrderLineInput[], taxDefault
   const [menuItems, addons] = await Promise.all([
     prisma.menuItem.findMany({ where: { id: { in: menuItemIds }, tenantId: tid, isAvailable: true }, include: menuLineInclude }),
     addonIds.length
-      ? prisma.addon.findMany({ where: { id: { in: addonIds }, tenantId: tid, isActive: true }, select: { id: true, price: true } })
+      ? prisma.addon.findMany({
+          where: { id: { in: addonIds }, tenantId: tid, isActive: true },
+          select: { id: true, price: true, stockProductId: true, stockQtyPerUnit: true, stockProduct: { select: { id: true, name: true } } },
+        })
       : Promise.resolve([]),
   ]);
   const byId = new Map(menuItems.map((item) => [item.id, item]));
@@ -125,7 +128,7 @@ async function resolveMenuLines(tid: string, lines: OrderLineInput[], taxDefault
     };
   });
 
-  return { lines: resolved, menuItemsById: byId };
+  return { lines: resolved, menuItemsById: byId, addonsById: new Map(addons.map((a) => [a.id, a])) };
 }
 
 /** Turns resolved lines into a Prisma `items.create` payload. */
@@ -189,7 +192,7 @@ export const orderInclude = {
     variant: { select: { id: true, name: true, stockProductId: true, stockQtyPerUnit: true, stockProduct: { select: { id: true, name: true } } } },
     product: { select: { id: true, name: true, unit: true } },
     service: { select: { id: true, name: true, unit: { select: { name: true } } } },
-    addons: { include: { addon: true } },
+    addons: { include: { addon: { include: { stockProduct: { select: { id: true, name: true } } } } } },
   } },
   payments: { include: { paymentMethod: { select: { id: true, name: true, requiresReference: true } } } },
   table: true,
@@ -536,8 +539,9 @@ posRouter.post("/orders/:id/items", async (req, res) => {
   const tax = await taxSettingsFor(tid);
   let resolvedLines: ResolvedLine[];
   let menuItemsById: Awaited<ReturnType<typeof resolveMenuLines>>["menuItemsById"];
+  let addonsById: Awaited<ReturnType<typeof resolveMenuLines>>["addonsById"];
   try {
-    ({ lines: resolvedLines, menuItemsById } = await resolveMenuLines(tid, parsed.data.items, tax));
+    ({ lines: resolvedLines, menuItemsById, addonsById } = await resolveMenuLines(tid, parsed.data.items, tax));
   } catch (error) {
     if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
     throw error;
@@ -576,8 +580,23 @@ posRouter.post("/orders/:id/items", async (req, res) => {
         const stockLocationId = await resolveStockLocationId(tid, order.locationId);
         if (!stockLocationId) throw Object.assign(new Error("No location is configured to hold stock for this order"), { status: 400 });
         // Only the newly added items need deducting — the rest were already
-        // committed when the order was first served.
-        const newItems = resolvedLines.map((line) => ({ quantity: line.quantity, menuItem: menuItemsById.get(line.menuItemId)! }));
+        // committed when the order was first served. Reuses menuItemsById's
+        // full variant list (with its own stockProduct) rather than just a
+        // variantId, and addonsById for each add-on's own stock link — a
+        // bare { quantity, menuItem } here (no variant/addons) previously
+        // fell through to the parent item's own recipe/product, silently
+        // deducting the wrong thing (or nothing) for every "another round"
+        // added to an already-SERVED tab.
+        const newItems: OrderItemForStock[] = resolvedLines.map((line) => {
+          const mi = menuItemsById.get(line.menuItemId)!;
+          const variant = line.variantId ? mi.variants.find((v) => v.id === line.variantId) ?? null : null;
+          return {
+            quantity: line.quantity,
+            menuItem: mi,
+            variant,
+            addons: line.addons.map((a) => ({ quantity: a.quantity, addon: addonsById.get(a.addonId)! })),
+          };
+        });
         await deductStockForOrder(tx, tid, computeStockRequirements(newItems), stockLocationId, order.orderNumber, req);
       }
       return tx.posOrder.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
@@ -652,10 +671,12 @@ posRouter.patch("/orders/:id/items/:itemId", async (req, res) => {
   const tax = await taxSettingsFor(tid);
   let resolved: ResolvedLine;
   let menuItemsById: Awaited<ReturnType<typeof resolveMenuLines>>["menuItemsById"];
+  let addonsById: Awaited<ReturnType<typeof resolveMenuLines>>["addonsById"];
   try {
     const out = await resolveMenuLines(tid, [desired], tax);
     resolved = out.lines[0];
     menuItemsById = out.menuItemsById;
+    addonsById = out.addonsById;
   } catch (error) {
     if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
     throw error;
@@ -669,8 +690,11 @@ posRouter.patch("/orders/:id/items/:itemId", async (req, res) => {
         const mi = menuItemsById.get(existing.menuItemId!)!;
         const beforeVariant = existing.variantId ? mi.variants.find((v) => v.id === existing.variantId) ?? null : null;
         const afterVariant = resolved.variantId ? mi.variants.find((v) => v.id === resolved.variantId) ?? null : null;
-        const before = computeStockRequirements([{ quantity: existing.quantity, menuItem: mi, variant: beforeVariant }]);
-        const after = computeStockRequirements([{ quantity: resolved.quantity, menuItem: mi, variant: afterVariant }]);
+        const before = computeStockRequirements([{ quantity: existing.quantity, menuItem: mi, variant: beforeVariant, addons: existing.addons }]);
+        const after = computeStockRequirements([{
+          quantity: resolved.quantity, menuItem: mi, variant: afterVariant,
+          addons: resolved.addons.map((a) => ({ quantity: a.quantity, addon: addonsById.get(a.addonId)! })),
+        }]);
         await applyStockDelta(tx, tid, stockLocationId, before, after, order.orderNumber, req);
       }
       await tx.posOrderItemAddon.deleteMany({ where: { orderItemId: existing.id } });
@@ -714,7 +738,7 @@ posRouter.delete("/orders/:id/items/:itemId", async (req, res) => {
       if (order.status === "SERVED" && existing.menuItem) {
         const stockLocationId = await resolveStockLocationId(tid, order.locationId);
         if (!stockLocationId) throw Object.assign(new Error("No location is configured to hold stock for this order"), { status: 400 });
-        const before = computeStockRequirements([{ quantity: existing.quantity, menuItem: existing.menuItem, variant: existing.variant }]);
+        const before = computeStockRequirements([{ quantity: existing.quantity, menuItem: existing.menuItem, variant: existing.variant, addons: existing.addons }]);
         await applyStockDelta(tx, tid, stockLocationId, before, new Map(), order.orderNumber, req);
       }
       await tx.posOrderItem.delete({ where: { id: existing.id } });
@@ -746,32 +770,40 @@ type OrderItemForStock = {
     stockQtyPerUnit?: QtyLike;
     recipe: { ingredients: { product: StockRef; quantity: Prisma.Decimal | number }[] } | null;
   } | null;
+  addons?: { quantity: number; addon: { stockProductId: string | null; stockQtyPerUnit: QtyLike; stockProduct: StockRef | null } }[];
 };
 
 /** Totals up how much of each product a set of order items actually needs.
- * Priority per line: a variant's own product+serving (Tot/Double/Bottle) →
- * the menu item's recipe ingredients → the menu item's directly-linked
- * product times its stockQtyPerUnit (defaulting to 1 = a whole unit). */
+ * Priority per line for the item itself: a variant's own product+serving
+ * (Tot/Double/Bottle) → the menu item's recipe ingredients → the menu item's
+ * directly-linked product times its stockQtyPerUnit (defaulting to 1 = a
+ * whole unit). Each add-on on the line is independent of that choice and,
+ * when it carries its own stock link, adds its own requirement on top (an
+ * "Extra Red Bull" consumes a can regardless of what the parent drink
+ * consumes) — see the pricing math in orderTotals.ts's lineSubtotal, which
+ * the same addon.quantity × orderItem.quantity multiplication mirrors. */
 function computeStockRequirements(items: OrderItemForStock[]): Map<string, { quantity: number; name: string }> {
   const requirements = new Map<string, { quantity: number; name: string }>();
+  const add = (item: StockRef, quantity: number) => {
+    const current = requirements.get(item.id);
+    requirements.set(item.id, { quantity: (current?.quantity ?? 0) + quantity, name: item.name });
+  };
   for (const orderItem of items) {
     const v = orderItem.variant;
-    let ingredients: { item: StockRef; quantity: number }[];
+    let ingredients: { item: StockRef; quantity: number }[] | null = null;
     if (v?.stockProductId && v.stockProduct) {
       ingredients = [{ item: v.stockProduct, quantity: Number(v.stockQtyPerUnit ?? 1) }];
-    } else if (!orderItem.menuItem) {
-      continue;
-    } else if (orderItem.menuItem.recipe?.ingredients.length) {
+    } else if (orderItem.menuItem?.recipe?.ingredients.length) {
       ingredients = orderItem.menuItem.recipe.ingredients.map((ingredient) => ({ item: ingredient.product, quantity: Number(ingredient.quantity) }));
-    } else if (orderItem.menuItem.product) {
+    } else if (orderItem.menuItem?.product) {
       ingredients = [{ item: orderItem.menuItem.product, quantity: Number(orderItem.menuItem.stockQtyPerUnit ?? 1) }];
-    } else {
-      continue;
     }
-    for (const ingredient of ingredients) {
-      const required = ingredient.quantity * orderItem.quantity;
-      const current = requirements.get(ingredient.item.id);
-      requirements.set(ingredient.item.id, { quantity: (current?.quantity ?? 0) + required, name: ingredient.item.name });
+    if (ingredients) {
+      for (const ingredient of ingredients) add(ingredient.item, ingredient.quantity * orderItem.quantity);
+    }
+    for (const orderAddon of orderItem.addons ?? []) {
+      if (!orderAddon.addon.stockProductId || !orderAddon.addon.stockProduct) continue;
+      add(orderAddon.addon.stockProduct, Number(orderAddon.addon.stockQtyPerUnit ?? 1) * orderAddon.quantity * orderItem.quantity);
     }
   }
   return requirements;
@@ -828,11 +860,18 @@ posRouter.patch("/orders/:id/serve", async (req, res) => {
 
   try {
     await prisma.$transaction(async (tx) => {
+      // Claims the row before touching stock — a conditional update, not a
+      // plain one, so a second concurrent tap (slow connection, an eager
+      // waiter and counter both hitting Serve) finds 0 rows still READY and
+      // aborts here instead of both requests deducting stock for the same
+      // order.
+      const claimed = await tx.posOrder.updateMany({ where: { id: activeOrder.id, status: "READY" }, data: { status: "SERVED", servedAt: new Date() } });
+      if (claimed.count === 0) throw Object.assign(new Error("This order was already served"), { status: 409 });
       await deductStockForOrder(tx, tid, requirements, stockLocationId, activeOrder.orderNumber, req);
-      await tx.posOrder.update({ where: { id: activeOrder.id }, data: { status: "SERVED", servedAt: new Date() } });
     });
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Not enough ")) { res.status(409).json({ error: error.message }); return; }
+    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
     throw error;
   }
 
@@ -842,9 +881,19 @@ posRouter.patch("/orders/:id/serve", async (req, res) => {
 const cancelRequestSchema = z.object({ reason: z.string().trim().min(3, "Give a reason").max(500) });
 const rejectCancelSchema = z.object({ note: z.string().trim().max(500).optional() });
 
-/** A waiter requests a cancellation — every cancel needs admin approval, so
+// A "return" is a cancellation of an order that's already been served (or
+// paid) rather than one still being prepared — same request/approve/reject
+// machinery, but only within this window of servedAt. An order that hasn't
+// been served yet (no servedAt) has no such limit; it's a plain pre-service
+// cancellation.
+const RETURN_WINDOW_MS = 60 * 60 * 1000;
+
+/** A waiter requests a cancellation or return — every one needs approval, so
  * this just parks the order in PENDING_CANCELLATION with a reason. The table
- * stays held and the order stays off the Active tab until an admin decides. */
+ * stays held and the order stays off the Active tab until a decision is
+ * made. Allowed from any non-final status; once an order has been served,
+ * it's only allowed within RETURN_WINDOW_MS of servedAt (this is what makes
+ * a COMPLETED order — otherwise finalized — still reachable here). */
 posRouter.patch("/orders/:id/cancel", async (req, res) => {
   const parsed = cancelRequestSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid request", details: parsed.error.flatten() }); return; }
@@ -852,7 +901,11 @@ posRouter.patch("/orders/:id/cancel", async (req, res) => {
   const existing = await prisma.posOrder.findFirst({ where: { id: req.params.id, tenantId: tid } });
   if (!existing) { res.status(404).json({ error: "Order not found" }); return; }
   if (existing.status === "PENDING_CANCELLATION") { res.status(409).json({ error: "This order is already waiting for a cancellation decision" }); return; }
-  if (["COMPLETED", "CANCELLED"].includes(existing.status)) { res.status(409).json({ error: "This order is finalized and can't be cancelled" }); return; }
+  if (existing.status === "CANCELLED") { res.status(409).json({ error: "This order is already cancelled" }); return; }
+  if (existing.servedAt && Date.now() - existing.servedAt.getTime() > RETURN_WINDOW_MS) {
+    res.status(409).json({ error: "Returns are only allowed within 1 hour of an order being served" });
+    return;
+  }
   const updated = await prisma.posOrder.update({
     where: { id: existing.id },
     data: {
@@ -871,24 +924,38 @@ posRouter.patch("/orders/:id/cancel", async (req, res) => {
   res.status(200).json({ order: withFinancials(updated, tax) });
 });
 
-/** Admin approves a pending cancellation → CANCELLED. Frees the table, and
- * for an order that had already been served, returns its stock. Blocked if
- * the order has taken any payment (that needs a manual refund first). */
+/** Admin approves a pending cancellation/return → CANCELLED. Frees the
+ * table; if the order had already been served (checked via servedAt, not
+ * statusBeforeCancel — a COMPLETED order was served too), returns its
+ * stock. Any payments taken are voided in the Transaction ledger (so they
+ * drop out of revenue) rather than blocking the approval — the physical
+ * cash/M-Pesa handback is a manual step outside the app, this just keeps
+ * the books honest. Same for a credit sale: reconcileOrderCredit unwinds
+ * whatever balance this order had pushed onto the customer. */
 posRouter.post("/orders/:id/cancel/approve", requirePermission("POS_APPROVE_CANCELLATION"), async (req, res) => {
   const id = req.params.id as string;
   const tid = tenantIdFor(req);
   const order = await prisma.posOrder.findFirst({ where: { id, tenantId: tid }, include: orderInclude });
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
   if (order.status !== "PENDING_CANCELLATION") { res.status(409).json({ error: "This order isn't waiting for a cancellation decision" }); return; }
-  if (order.payments.length > 0) { res.status(409).json({ error: "This order has recorded payments — refund those before cancelling it" }); return; }
   try {
     const updated = await prisma.$transaction(async (tx) => {
-      if (order.statusBeforeCancel === "SERVED") {
+      if (order.servedAt) {
         const stockLocationId = await resolveStockLocationId(tid, order.locationId);
         if (stockLocationId) {
           const req0 = computeStockRequirements(order.items);
           await applyStockDelta(tx, tid, stockLocationId, req0, new Map(), order.orderNumber, req);
         }
+      }
+      if (order.payments.length > 0) {
+        await tx.transaction.updateMany({
+          where: { tenantId: tid, sourceRefId: { in: order.payments.map((p) => p.id) }, status: "COMPLETE" },
+          data: { status: "VOIDED" },
+        });
+      }
+      const creditCustomerId = order.customerId ?? order.reservation?.customerId ?? null;
+      if (creditCustomerId) {
+        await reconcileOrderCredit(tx, { tenantId: tid, orderId: order.id, orderNumber: order.orderNumber, customerId: creditCustomerId, status: "CANCELLED", paid: 0, total: 0, by: req.userId });
       }
       await tx.posOrder.update({ where: { id: order.id }, data: { status: "CANCELLED", cancelDecidedBy: req.userId ?? null, cancelDecidedAt: new Date() } });
       if (order.tableId) await releaseTableIfIdle(tx, order.tableId);

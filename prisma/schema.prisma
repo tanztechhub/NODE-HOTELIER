@@ -1409,6 +1409,7 @@ model Product {
 
   menuItems         MenuItem[]
   variantStocks     MenuItemVariant[]         @relation("VariantStock")
+  addonStocks       Addon[]                   @relation("AddonStock")
   movements         InventoryMovement[]
   recipeIngredients RecipeIngredient[]
   stocks            ProductStock[]
@@ -1888,6 +1889,16 @@ model Addon {
   price          Decimal             @db.Decimal(12, 2)
   sku            String?
   imageUrl       String?
+  // Optional stock link, same convention as MenuItemVariant's own
+  // stockProductId/stockQtyPerUnit: when set, one unit of this add-on
+  // consumes stockQtyPerUnit (in the product's pack unit) of that product —
+  // e.g. an "Extra Red Bull" add-on consuming 1 can, or a "Double shot"
+  // add-on consuming 25ml of the same spirit as its parent variant. Without
+  // this link an add-on has no stock impact at all (a free garnish, a
+  // service charge line, etc.).
+  stockProductId  String?
+  stockProduct    Product?            @relation("AddonStock", fields: [stockProductId], references: [id], onDelete: SetNull)
+  stockQtyPerUnit Decimal?            @db.Decimal(12, 3)
   isActive       Boolean             @default(true)
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
