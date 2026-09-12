@@ -582,3 +582,186 @@ reportsRouter.get("/sales", async (req, res, next) => {
     next(error);
   }
 });
+
+// ============================================================================
+// Inventory Report — a live (or as-of-date) stock snapshot: what's on hand
+// right now, its value by category, and a per-location breakdown. This is
+// deliberately a different report from GET /inventory above (which is a
+// movement-over-a-period reconstruction) — this one answers "what do we have
+// on the shelf today", not "what moved this week".
+// ============================================================================
+
+type StockRow = { productId: string; name: string; sku: string | null; category: string | null; quantity: number; unitCost: number; reorderLevel: number };
+
+function summarizeStock(rows: StockRow[]) {
+  const stockValue = round2(rows.reduce((s, r) => s + r.quantity * r.unitCost, 0));
+  const byCategoryMap = new Map<string, { units: number; value: number }>();
+  for (const r of rows) {
+    const key = r.category ?? "Uncategorized";
+    const bucket = byCategoryMap.get(key) ?? { units: 0, value: 0 };
+    bucket.units += r.quantity;
+    bucket.value += r.quantity * r.unitCost;
+    byCategoryMap.set(key, bucket);
+  }
+  const byCategory = [...byCategoryMap.entries()]
+    .map(([category, v]) => ({ category, units: v.units, value: round2(v.value), percent: stockValue > 0 ? round2((v.value / stockValue) * 100) : 0 }))
+    .sort((a, b) => b.value - a.value);
+  return {
+    totalProducts: rows.length,
+    totalUnits: rows.reduce((s, r) => s + r.quantity, 0),
+    lowStockCount: rows.filter((r) => r.quantity > 0 && r.quantity <= r.reorderLevel).length,
+    outOfStockCount: rows.filter((r) => r.quantity === 0).length,
+    stockValue,
+    byCategory,
+  };
+}
+
+reportsRouter.get("/inventory-overview", async (req, res, next) => {
+  try {
+    const query = z.object({ asOfDate: isoDate.optional(), locationId: z.string().trim().optional() }).safeParse(req.query);
+    if (!query.success) { res.status(400).json({ error: "Invalid filters", details: query.error.flatten() }); return; }
+    const tid = tenantId(req);
+    const { asOfDate, locationId } = query.data;
+    const mode: "live" | "asOf" = asOfDate && asOfDate !== localIsoToday() ? "asOf" : "live";
+
+    const locations = await prisma.location.findMany({
+      where: { tenantId: tid, ...(locationId ? { id: locationId } : {}) },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    });
+
+    // key: `${productId}::${locationId}` -> quantity on hand
+    const balances = new Map<string, number>();
+    if (mode === "live") {
+      const stocks = await prisma.productStock.findMany({
+        where: { tenantId: tid, ...(locationId ? { locationId } : {}) },
+        select: { productId: true, locationId: true, quantity: true },
+      });
+      for (const s of stocks) balances.set(`${s.productId}::${s.locationId}`, Number(s.quantity));
+    } else {
+      const { end } = dayBounds(asOfDate, asOfDate);
+      const movements = await prisma.inventoryMovement.findMany({
+        where: { tenantId: tid, occurredAt: { lte: end }, ...(locationId ? { locationId } : {}) },
+        select: { productId: true, locationId: true, quantity: true },
+      });
+      for (const m of movements) {
+        const key = `${m.productId}::${m.locationId}`;
+        balances.set(key, (balances.get(key) ?? 0) + Number(m.quantity));
+      }
+    }
+
+    const productIds = new Set([...balances.keys()].map((k) => k.split("::")[0]));
+    const products = productIds.size
+      ? await prisma.product.findMany({
+          where: { id: { in: [...productIds] }, tenantId: tid },
+          select: { id: true, name: true, sku: true, unitCost: true, reorderLevel: true, category: { select: { name: true } } },
+        })
+      : [];
+    const productById = new Map(products.map((p) => [p.id, p]));
+
+    const perLocation = locations.map((loc) => {
+      const rows: StockRow[] = [];
+      for (const [key, quantity] of balances) {
+        const [productId, locId] = key.split("::");
+        if (locId !== loc.id) continue;
+        const p = productById.get(productId);
+        if (!p) continue;
+        rows.push({ productId, name: p.name, sku: p.sku, category: p.category?.name ?? null, quantity, unitCost: p.unitCost != null ? Number(p.unitCost) : 0, reorderLevel: Number(p.reorderLevel) });
+      }
+      rows.sort((a, b) => a.name.localeCompare(b.name));
+      const summary = summarizeStock(rows);
+      return { locationId: loc.id, name: loc.name, ...summary, products: rows.map(({ reorderLevel, ...r }) => ({ ...r, value: round2(r.quantity * r.unitCost), low: r.quantity > 0 && r.quantity <= reorderLevel, out: r.quantity === 0 })) };
+    });
+
+    // Overall: one row per product, quantity summed across every location.
+    const overallByProduct = new Map<string, number>();
+    for (const [key, quantity] of balances) {
+      const productId = key.split("::")[0];
+      overallByProduct.set(productId, (overallByProduct.get(productId) ?? 0) + quantity);
+    }
+    const overallRows: StockRow[] = [...overallByProduct.entries()].map(([productId, quantity]) => {
+      const p = productById.get(productId)!;
+      return { productId, name: p.name, sku: p.sku, category: p.category?.name ?? null, quantity, unitCost: p.unitCost != null ? Number(p.unitCost) : 0, reorderLevel: Number(p.reorderLevel) };
+    });
+
+    res.json({ mode, asOfDate: asOfDate ?? localIsoToday(), overall: summarizeStock(overallRows), locations: perLocation });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================================================
+// Products Report — best sellers and slow movers for a period, by quantity,
+// revenue, or profit. The product universe is every active product (so a
+// never-sold one still shows up among the slowest movers); "last sold" looks
+// across all time, independent of the selected period.
+// ============================================================================
+
+reportsRouter.get("/products-overview", async (req, res, next) => {
+  try {
+    const query = z.object({
+      from: isoDate.optional(),
+      to: isoDate.optional(),
+      locationId: z.string().trim().optional(),
+      limit: z.coerce.number().int().min(1).max(100).default(20),
+    }).safeParse(req.query);
+    if (!query.success) { res.status(400).json({ error: "Invalid filters", details: query.error.flatten() }); return; }
+    const tid = tenantId(req);
+    const { locationId, limit } = query.data;
+    const { start, end } = dayBounds(query.data.from, query.data.to);
+
+    const [products, completedOrders, lastSoldRows] = await Promise.all([
+      prisma.product.findMany({ where: { tenantId: tid, isActive: true }, select: { id: true, name: true, sku: true, category: { select: { name: true } } } }),
+      prisma.posOrder.findMany({
+        where: { tenantId: tid, status: "COMPLETED", updatedAt: { gte: start, lte: end }, ...(locationId ? { locationId } : {}) },
+        select: { items: { where: { productId: { not: null } }, select: { productId: true, quantity: true, unitPrice: true, product: { select: { unitCost: true } } } } },
+      }),
+      prisma.posOrderItem.groupBy({
+        by: ["productId"],
+        where: { productId: { not: null }, order: { tenantId: tid, status: "COMPLETED" } },
+        _max: { createdAt: true },
+      }),
+    ]);
+
+    const soldMap = new Map<string, { qty: number; revenue: number; cost: number }>();
+    for (const order of completedOrders) {
+      for (const item of order.items) {
+        if (!item.productId) continue;
+        const bucket = soldMap.get(item.productId) ?? { qty: 0, revenue: 0, cost: 0 };
+        bucket.qty += item.quantity;
+        bucket.revenue += Number(item.unitPrice) * item.quantity;
+        bucket.cost += item.product?.unitCost != null ? Number(item.product.unitCost) * item.quantity : 0;
+        soldMap.set(item.productId, bucket);
+      }
+    }
+    const lastSoldMap = new Map(lastSoldRows.filter((r) => r.productId).map((r) => [r.productId as string, r._max.createdAt]));
+
+    const rows = products.map((p) => {
+      const sold = soldMap.get(p.id) ?? { qty: 0, revenue: 0, cost: 0 };
+      const profit = sold.revenue - sold.cost;
+      return {
+        productId: p.id,
+        name: p.name,
+        sku: p.sku,
+        category: p.category?.name ?? null,
+        qty: sold.qty,
+        revenue: round2(sold.revenue),
+        profit: round2(profit),
+        margin: sold.revenue > 0 ? round2((profit / sold.revenue) * 100) : 0,
+        lastSoldAt: lastSoldMap.get(p.id)?.toISOString() ?? null,
+      };
+    });
+
+    res.json({
+      range: { from: start.toISOString(), to: end.toISOString() },
+      bestSelling: {
+        byQuantity: [...rows].sort((a, b) => b.qty - a.qty).slice(0, limit),
+        byRevenue: [...rows].sort((a, b) => b.revenue - a.revenue).slice(0, limit),
+        byProfit: [...rows].sort((a, b) => b.profit - a.profit).slice(0, limit),
+      },
+      slowest: [...rows].sort((a, b) => a.qty - b.qty).slice(0, limit),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
