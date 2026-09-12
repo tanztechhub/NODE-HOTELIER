@@ -301,7 +301,7 @@ reportsRouter.get("/sales", async (req, res, next) => {
       taxSettingsFor(tid),
       prisma.posOrder.findMany({
         where: { tenantId: tid, status: "COMPLETED", updatedAt: { gte: start, lte: end }, ...(locationId ? { locationId } : {}) },
-        include: { items: { include: orderItemInclude }, location: { select: { id: true, name: true } } },
+        include: { items: { include: orderItemInclude }, location: { select: { id: true, name: true } }, customer: { select: { id: true, firstName: true, lastName: true } } },
       }),
       prisma.posOrder.findMany({
         where: { tenantId: tid, status: "CANCELLED", updatedAt: { gte: start, lte: end }, ...(locationId ? { locationId } : {}) },
@@ -359,6 +359,7 @@ reportsRouter.get("/sales", async (req, res, next) => {
     const taxBuckets = new Map<string, { key: string; label: string; treatment: string; rate: number; mode: string; net: number; tax: number; gross: number }>();
     const topItemsMap = new Map<string, { name: string; qty: number; revenue: number }>();
     const byLocationMap = new Map<string, { name: string; count: number; revenue: number; cogs: number }>();
+    const byCustomerMap = new Map<string, { name: string; count: number; revenue: number }>();
 
     for (const order of completedOrders) {
       const fin = computeOrderFinancials(order, tax);
@@ -393,6 +394,12 @@ reportsRouter.get("/sales", async (req, res, next) => {
       locBucket.revenue += fin.total;
       locBucket.cogs += orderCogs;
       byLocationMap.set(locKey, locBucket);
+
+      const custKey = order.customerId ?? "walk-in";
+      const custBucket = byCustomerMap.get(custKey) ?? { name: order.customer ? `${order.customer.firstName} ${order.customer.lastName ?? ""}`.trim() : "Walk-in", count: 0, revenue: 0 };
+      custBucket.count += 1;
+      custBucket.revenue += fin.total;
+      byCustomerMap.set(custKey, custBucket);
     }
     completedSalesValue = round2(completedSalesValue);
     cogsTotal = round2(cogsTotal);
@@ -486,6 +493,23 @@ reportsRouter.get("/sales", async (req, res, next) => {
       .map((b) => ({ ...b, total: round2(b.total), percentOfTotal: transactionsInTotal ? round2((b.total / transactionsInTotal) * 100) : 0 }))
       .sort((a, b) => b.total - a.total);
 
+    // ---- Sales by customer — sold-basis like Sales by Location (a credit
+    // sale counts here even before it's paid), top 10 by revenue plus a
+    // combined tail so the percentages still foot to 100%. ----
+    const byCustomerSorted = [...byCustomerMap.values()]
+      .map((b) => ({ ...b, revenue: round2(b.revenue), percentOfTotal: completedSalesValue ? round2((b.revenue / completedSalesValue) * 100) : 0 }))
+      .sort((a, b) => b.revenue - a.revenue);
+    const byCustomer = byCustomerSorted.slice(0, 10);
+    if (byCustomerSorted.length > 10) {
+      const rest = byCustomerSorted.slice(10);
+      byCustomer.push({
+        name: `${rest.length} other customer${rest.length === 1 ? "" : "s"}`,
+        count: rest.reduce((s, c) => s + c.count, 0),
+        revenue: round2(rest.reduce((s, c) => s + c.revenue, 0)),
+        percentOfTotal: round2(rest.reduce((s, c) => s + c.percentOfTotal, 0)),
+      });
+    }
+
     // ---- Voided sales / (unsupported) returns ----
     const voided = { count: cancelledOrders.length, value: round2(cancelledOrders.reduce((s, o) => s + computeOrderFinancials(o, tax).total, 0)) };
     const returns = { supported: false, count: 0, value: 0, note: "Partial refunds aren't tracked yet — only whole-order voids are." };
@@ -545,6 +569,7 @@ reportsRouter.get("/sales", async (req, res, next) => {
       salesByLocation,
       byPaymentMethod,
       byEmployee,
+      byCustomer,
       voided,
       returns,
       cancelledPurchases: cancelledPurchasesSummary,

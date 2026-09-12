@@ -18,6 +18,10 @@ const listSchema = z.object({
   search: optionalText(120),
   from: z.preprocess(blankToUndefined, z.coerce.date().optional()),
   to: z.preprocess(blankToUndefined, z.coerce.date().optional()),
+  // Cap the rows returned (most recent first) — e.g. the Dashboard's
+  // "Latest transactions" widget only wants a handful. Omitted = no cap,
+  // matching the page's existing unbounded behaviour.
+  limit: z.coerce.number().int().min(1).max(500).optional(),
 });
 
 const tenantId = (req: { tenantId?: string }) => {
@@ -36,34 +40,39 @@ const transactionInclude = {
 transactionsRouter.get("/", async (req, res) => {
   const query = listSchema.safeParse(req.query);
   if (!query.success) { res.status(400).json({ error: "Invalid transaction filters", details: query.error.flatten() }); return; }
-  const { direction, source, paymentMethodId, search, from, to } = query.data;
+  const { direction, source, paymentMethodId, search, from, to, limit } = query.data;
   const tid = tenantId(req);
 
-  const transactions = await prisma.transaction.findMany({
-    where: {
-      tenantId: tid,
-      ...(direction ? { direction } : {}),
-      ...(source ? { source } : {}),
-      ...(paymentMethodId ? { paymentMethodId } : {}),
-      ...(from || to ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
-      ...(search
-        ? {
-            OR: [
-              { transactionNo: { contains: search, mode: "insensitive" } },
-              { reference: { contains: search, mode: "insensitive" } },
-              { description: { contains: search, mode: "insensitive" } },
-              { customer: { firstName: { contains: search, mode: "insensitive" } } },
-              { customer: { lastName: { contains: search, mode: "insensitive" } } },
-              { supplier: { name: { contains: search, mode: "insensitive" } } },
-            ],
-          }
-        : {}),
-    },
-    include: transactionInclude,
-    orderBy: { createdAt: "desc" },
-  });
+  const where = {
+    tenantId: tid,
+    ...(direction ? { direction } : {}),
+    ...(source ? { source } : {}),
+    ...(paymentMethodId ? { paymentMethodId } : {}),
+    ...(from || to ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
+    ...(search
+      ? {
+          OR: [
+            { transactionNo: { contains: search, mode: "insensitive" as const } },
+            { reference: { contains: search, mode: "insensitive" as const } },
+            { description: { contains: search, mode: "insensitive" as const } },
+            { customer: { firstName: { contains: search, mode: "insensitive" as const } } },
+            { customer: { lastName: { contains: search, mode: "insensitive" as const } } },
+            { supplier: { name: { contains: search, mode: "insensitive" as const } } },
+          ],
+        }
+      : {}),
+  };
 
-  const totalIn = transactions.filter((t) => t.direction === "IN").reduce((s, t) => s + Number(t.amount), 0);
-  const totalOut = transactions.filter((t) => t.direction === "OUT").reduce((s, t) => s + Number(t.amount), 0);
-  res.json({ transactions, summary: { totalIn, totalOut, count: transactions.length } });
+  // The summary always reflects every matching row, not just the page a
+  // `limit` returns — a "latest 8" request shouldn't quietly shrink the
+  // in/out totals to just those 8.
+  const [transactions, aggregate] = await Promise.all([
+    prisma.transaction.findMany({ where, include: transactionInclude, orderBy: { createdAt: "desc" }, ...(limit ? { take: limit } : {}) }),
+    prisma.transaction.groupBy({ by: ["direction"], where, _sum: { amount: true }, _count: true }),
+  ]);
+
+  const totalIn = Number(aggregate.find((a) => a.direction === "IN")?._sum.amount ?? 0);
+  const totalOut = Number(aggregate.find((a) => a.direction === "OUT")?._sum.amount ?? 0);
+  const totalCount = aggregate.reduce((s, a) => s + a._count, 0);
+  res.json({ transactions, summary: { totalIn, totalOut, count: totalCount } });
 });
