@@ -335,50 +335,8 @@ productsRouter.post("/:id/transfer", async (req, res, next) => {
   res.status(201).json({ product: withTotal(updatedProduct) });
 });
 
-const distributeSchema = z.object({
-  fromLocationId: z.string().trim().min(1),
-  toLocationId: z.string().trim().min(1),
-  items: z.array(z.object({ productId: z.string().trim().min(1), quantity: z.coerce.number().positive() })).min(1),
-  note: z.string().trim().max(500).optional(),
-}).refine((v) => v.fromLocationId !== v.toLocationId, { message: "Choose two different locations", path: ["toLocationId"] });
-
-/** Batch version of /:id/transfer — moves several products from one location
- * to another in a single all-or-nothing transaction, for the "distribute
- * stock from the warehouse to a selling point" workflow. */
-productsRouter.post("/distribute", async (req, res) => {
-  const data = distributeSchema.safeParse(req.body);
-  if (!data.success) { res.status(400).json({ error: "Invalid distribution", details: data.error.flatten() }); return; }
-  const tid = tenantId(req);
-  const { fromLocationId, toLocationId, items, note } = data.data;
-  const [fromLocation, toLocation] = await Promise.all([
-    assertLocationInTenant(fromLocationId, tid).catch(() => null),
-    assertLocationInTenant(toLocationId, tid).catch(() => null),
-  ]);
-  if (!fromLocation || !toLocation) { res.status(400).json({ error: "Choose two locations from this property" }); return; }
-  const productIds = items.map((item) => item.productId);
-  const products = await prisma.product.findMany({ where: { id: { in: productIds }, tenantId: tid }, select: { id: true, name: true } });
-  if (products.length !== new Set(productIds).size) { res.status(400).json({ error: "Every item must be a product from this property" }); return; }
-  const productNames = new Map(products.map((p) => [p.id, p.name]));
-
-  try {
-    await prisma.$transaction(async (tx) => {
-      const transferNote = note ?? `Distribute ${fromLocation.name} → ${toLocation.name}`;
-      for (const item of items) {
-        await recordStockMovement(tx, {
-          tenantId: tid, productId: item.productId, locationId: fromLocationId, type: "TRANSFER_OUT",
-          quantity: -item.quantity, note: transferNote, sourceType: "DISTRIBUTE",
-          performedBy: req.userId ?? null, label: productNames.get(item.productId) ?? "stock",
-        });
-        await recordStockMovement(tx, {
-          tenantId: tid, productId: item.productId, locationId: toLocationId, type: "TRANSFER_IN",
-          quantity: item.quantity, note: transferNote, sourceType: "DISTRIBUTE", performedBy: req.userId ?? null,
-        });
-      }
-    });
-  } catch (error) {
-    if (error instanceof InsufficientStockError) { res.status(error.status).json({ error: `Not enough ${error.label} at ${fromLocation.name} to distribute` }); return; }
-    if (error instanceof Error && "status" in error) { res.status((error as Error & { status: number }).status).json({ error: error.message }); return; }
-    throw error;
-  }
-  res.status(201).json({ ok: true });
-});
+// Batch distribution (warehouse -> selling point, several products at once)
+// moved to its own module — see stock-transfers.routes.ts — which also
+// records a printable receipt with the frozen before/after balance at both
+// ends of every line. POST /distribute is gone; the single-product
+// /:id/transfer above is unrelated and stays as-is.
