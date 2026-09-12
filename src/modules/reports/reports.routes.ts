@@ -650,24 +650,30 @@ reportsRouter.get("/inventory-overview", async (req, res, next) => {
       }
     }
 
-    const productIds = new Set([...balances.keys()].map((k) => k.split("::")[0]));
-    const products = productIds.size
-      ? await prisma.product.findMany({
-          where: { id: { in: [...productIds] }, tenantId: tid },
-          select: { id: true, name: true, sku: true, unitCost: true, reorderLevel: true, category: { select: { name: true } } },
-        })
-      : [];
-    const productById = new Map(products.map((p) => [p.id, p]));
+    // Every active product, not just ones with a stock row anywhere — the
+    // per-location breakdown lists all of them so "we don't carry this here"
+    // is visible as an explicit zero row, not a silent gap in the table. An
+    // inactive product that still has a tracked balance is fetched too (via
+    // the OR below) so the overall summary further down never trips over a
+    // balance with no matching product.
+    const trackedProductIds = new Set([...balances.keys()].map((k) => k.split("::")[0]));
+    const allProducts = await prisma.product.findMany({
+      where: { tenantId: tid, OR: [{ isActive: true }, { id: { in: [...trackedProductIds] } }] },
+      select: { id: true, name: true, sku: true, unitCost: true, reorderLevel: true, isActive: true, category: { select: { name: true } } },
+    });
+    const productById = new Map(allProducts.map((p) => [p.id, p]));
+    const activeProducts = allProducts.filter((p) => p.isActive);
 
     const perLocation = locations.map((loc) => {
-      const rows: StockRow[] = [];
-      for (const [key, quantity] of balances) {
-        const [productId, locId] = key.split("::");
-        if (locId !== loc.id) continue;
-        const p = productById.get(productId);
-        if (!p) continue;
-        rows.push({ productId, name: p.name, sku: p.sku, category: p.category?.name ?? null, quantity, unitCost: p.unitCost != null ? Number(p.unitCost) : 0, reorderLevel: Number(p.reorderLevel) });
-      }
+      const rows: StockRow[] = activeProducts.map((p) => ({
+        productId: p.id,
+        name: p.name,
+        sku: p.sku,
+        category: p.category?.name ?? null,
+        quantity: balances.get(`${p.id}::${loc.id}`) ?? 0,
+        unitCost: p.unitCost != null ? Number(p.unitCost) : 0,
+        reorderLevel: Number(p.reorderLevel),
+      }));
       rows.sort((a, b) => a.name.localeCompare(b.name));
       const summary = summarizeStock(rows);
       return { locationId: loc.id, name: loc.name, ...summary, products: rows.map(({ reorderLevel, ...r }) => ({ ...r, value: round2(r.quantity * r.unitCost), low: r.quantity > 0 && r.quantity <= reorderLevel, out: r.quantity === 0 })) };
