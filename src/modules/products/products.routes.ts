@@ -61,10 +61,18 @@ const createSchema = z.object({
 });
 const updateSchema = partialNoDefaults(createSchema.omit({ openingStock: true, locationId: true }));
 
-// A hand-entered movement at one location: stock bought in (PURCHASE),
-// stock written off as broken/spoiled/lost (DAMAGE_LOSS), or a plain count
-// correction (ADJUSTMENT, signed). Location-to-location moves use /transfer.
-const MANUAL_MOVEMENT_TYPES = ["PURCHASE", "DAMAGE_LOSS", "ADJUSTMENT"] as const;
+// A hand-entered movement at one location, for when stock changes outside
+// the Purchases/Goods-Receipt flow: an opening balance for a product that
+// wasn't given one at creation (OPENING_STOCK), stock bought in off-book
+// (PURCHASE), stock physically handed back in (RETURN — same direction the
+// rest of the codebase already uses it, e.g. the POS return-restore path in
+// pos.routes.ts), stock written off as broken/spoiled/lost (DAMAGE_LOSS), or
+// a plain count correction (ADJUSTMENT, signed either way). Every one of
+// these is a positive add to stock except DAMAGE_LOSS, which the UI always
+// asks for as a positive "how much was lost" and this route negates.
+// Location-to-location moves use /transfer instead.
+const MANUAL_MOVEMENT_TYPES = ["OPENING_STOCK", "PURCHASE", "RETURN", "DAMAGE_LOSS", "ADJUSTMENT"] as const;
+const POSITIVE_ONLY_TYPES = ["OPENING_STOCK", "PURCHASE", "RETURN"] as const;
 const movementSchema = z.object({
   type: z.enum(MANUAL_MOVEMENT_TYPES),
   locationId: z.string().trim().min(1),
@@ -73,8 +81,8 @@ const movementSchema = z.object({
   note: z.string().trim().max(500).optional(),
   occurredAt: z.coerce.date().optional(),
 }).superRefine((value, context) => {
-  if (value.type === "PURCHASE" && value.quantity < 0) {
-    context.addIssue({ code: "custom", message: "Purchase quantity must be positive", path: ["quantity"] });
+  if ((POSITIVE_ONLY_TYPES as readonly string[]).includes(value.type) && value.quantity < 0) {
+    context.addIssue({ code: "custom", message: "Quantity must be positive for this movement type", path: ["quantity"] });
   }
 });
 
@@ -266,10 +274,12 @@ productsRouter.get("/:id/movements", async (req, res) => {
   res.json({ product: withTotal(product), movements });
 });
 
-/** Hand-entered stock movement at a single location: stock bought in
- * (PURCHASE), a write-off for breakage/spoilage/loss (DAMAGE_LOSS), or a
- * plain count correction (ADJUSTMENT). To move stock between two locations,
- * use /transfer. Every path here goes through the stock ledger. */
+/** Hand-entered stock movement at a single location — the Products tab's
+ * "Adjust stock" action, for anything outside the Purchases/Goods-Receipt
+ * flow: OPENING_STOCK, PURCHASE, RETURN, a write-off for breakage/spoilage/
+ * loss (DAMAGE_LOSS), or a plain count correction (ADJUSTMENT). To move
+ * stock between two locations, use /transfer. Every path here goes through
+ * the stock ledger. */
 productsRouter.post("/:id/movements", async (req, res, next) => {
   const data = movementSchema.safeParse(req.body);
   if (!data.success) { res.status(400).json({ error: "Invalid stock movement", details: data.error.flatten() }); return; }
