@@ -321,7 +321,7 @@ function lineCharge(line: FolioLineForTax, fallbackTax?: TaxFallback) {
   return sign * folioTotals({ lineItems: [{ ...line, amount: Math.abs(Number(line.amount)) }], payments: [] }, fallbackTax).charges;
 }
 
-function folioTotals(folio: { lineItems: FolioLineForTax[]; payments: { amount: unknown }[] } | null, fallbackTax?: TaxFallback) {
+export function folioTotals(folio: { lineItems: FolioLineForTax[]; payments: { amount: unknown }[] } | null, fallbackTax?: TaxFallback) {
   if (!folio) return { charges: 0, paid: 0, balance: 0, tax: null };
   const fin = computeOrderFinancials(
     {

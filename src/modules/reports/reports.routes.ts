@@ -5,7 +5,8 @@ import { prisma } from "../../lib/prisma.js";
 import { requireModule } from "../../middleware/tenantContext.js";
 import { computeOrderFinancials } from "../../lib/orderTotals.js";
 import { stockValue } from "../../lib/stockValuation.js";
-import { taxSettingsFor } from "../pos/pos.routes.js";
+import { orderInclude as posOrderInclude, taxSettingsFor, withFinancials } from "../pos/pos.routes.js";
+import { folioTotals } from "../reception/reception.routes.js";
 import { businessDateOnly, businessDayKey, businessDayWindowForDateOnly, addDays as addBusinessDays } from "../../lib/businessDay.js";
 
 export const reportsRouter = Router();
@@ -2519,6 +2520,151 @@ reportsRouter.get("/assets", async (req, res, next) => {
         id: m.id, occurredAt: m.occurredAt, assetNo: m.asset.assetNo, name: m.asset.name, quantity: Number(m.quantity), unit: m.asset.unitRef.name,
         note: m.note, by: m.employee ? fullName(m.employee) : null,
       })),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================================================
+// Dashboard day - the owner's full picture of one business day, by location:
+// what each selling location sold (every menu item, service and product, with
+// totals, payment status and payment methods), reception's stays active that
+// day with their money, new memberships, plus who owes money and the day's
+// purchases. Sales use the sales report's rule: orders completed in the day.
+// ============================================================================
+reportsRouter.get("/dashboard-day", async (req, res, next) => {
+  try {
+    const query = z.object({ date: isoDate.optional() }).safeParse(req.query);
+    if (!query.success) { res.status(400).json({ error: "Invalid date", details: query.error.flatten() }); return; }
+    const tid = tenantId(req);
+    const startHour = await businessDayStartHourFor(tid);
+    const { start, end } = resolveSalesRange("day", query.data.date, undefined, undefined, startHour);
+
+    const [tax, locations, orders, reservations, newMemberships, membershipPayments, debtors, purchases] = await Promise.all([
+      taxSettingsFor(tid),
+      prisma.location.findMany({
+        where: { tenantId: tid, isActive: true },
+        select: { id: true, name: true, type: true, canSellMenu: true, canSellServices: true, canSellProducts: true, canSellRooms: true },
+        orderBy: { name: "asc" },
+      }),
+      prisma.posOrder.findMany({ where: { tenantId: tid, status: "COMPLETED", completedAt: { gte: start, lte: end } }, include: posOrderInclude }),
+      // Every stay active in the day: arriving, in-house or departing.
+      prisma.reservation.findMany({
+        where: { tenantId: tid, status: { notIn: ["CANCELLED", "NO_SHOW"] }, checkIn: { lte: end }, checkOut: { gte: start } },
+        include: {
+          customer: { select: { firstName: true, lastName: true, phone: true } },
+          room: { select: { number: true, roomType: { select: { name: true } } } },
+          folio: { include: { lineItems: true, payments: true } },
+        },
+        orderBy: { checkIn: "asc" },
+      }),
+      prisma.membership.findMany({
+        where: { tenantId: tid, createdAt: { gte: start, lte: end } },
+        include: { customer: { select: { firstName: true, lastName: true, phone: true } }, payments: { select: { amount: true, status: true } } },
+        orderBy: { createdAt: "asc" },
+      }),
+      prisma.membershipPayment.findMany({ where: { tenantId: tid, status: "PAID", createdAt: { gte: start, lte: end } }, select: { amount: true, locationId: true } }),
+      prisma.customer.findMany({ where: { tenantId: tid, balance: { gt: 0 } }, select: { id: true, firstName: true, lastName: true, businessName: true, phone: true, balance: true }, orderBy: { balance: "desc" } }),
+      prisma.purchase.findMany({
+        where: { tenantId: tid, orderDate: { gte: start, lte: end } },
+        select: { id: true, purchaseNo: true, status: true, paymentStatus: true, total: true, reference: true, supplier: { select: { name: true } }, location: { select: { name: true } } },
+        orderBy: { orderDate: "asc" },
+      }),
+    ]);
+
+    type ItemRow = { key: string; kind: "MENU" | "SERVICE" | "PRODUCT"; name: string; quantity: number; complimentaryQuantity: number; value: number };
+    type Bucket = { orders: number; sales: number; paid: number; credit: number; roomBills: number; complimentary: number; methods: Map<string, number>; items: Map<string, ItemRow> };
+    const buckets = new Map<string, Bucket>();
+    const bucketFor = (key: string): Bucket => {
+      const found = buckets.get(key);
+      if (found) return found;
+      const fresh: Bucket = { orders: 0, sales: 0, paid: 0, credit: 0, roomBills: 0, complimentary: 0, methods: new Map(), items: new Map() };
+      buckets.set(key, fresh);
+      return fresh;
+    };
+    for (const order of orders) {
+      const fin = withFinancials(order, tax);
+      const b = bucketFor(order.locationId ?? "none");
+      const comp = order.saleType === "COMPLIMENTARY";
+      b.orders += 1;
+      if (comp) b.complimentary += fin.financials.complimentaryValue ?? 0;
+      else {
+        b.sales += fin.total;
+        const paid = Math.min(fin.paid, fin.total);
+        if (order.billedToRoomAt) b.roomBills += fin.total;
+        else { b.paid += paid; b.credit += Math.max(0, fin.total - paid); }
+      }
+      for (const p of order.payments) b.methods.set(p.paymentMethod.name, (b.methods.get(p.paymentMethod.name) ?? 0) + Number(p.amount));
+      order.items.forEach((item, index) => {
+        const kind: ItemRow["kind"] = item.serviceId ? "SERVICE" : item.menuItemId ? "MENU" : "PRODUCT";
+        const base = item.menuItem?.name ?? item.service?.name ?? item.product?.name ?? "Item";
+        const variant = item.variant?.name ?? item.serviceVariant?.name ?? null;
+        const name = variant ? `${base} (${variant})` : base;
+        const key = `${kind}:${name}`;
+        const row = b.items.get(key) ?? { key, kind, name, quantity: 0, complimentaryQuantity: 0, value: 0 };
+        row.quantity += item.quantity;
+        if (comp) row.complimentaryQuantity += item.quantity;
+        else row.value += fin.financials.taxLineItems?.[index]?.gross ?? 0;
+        b.items.set(key, row);
+      });
+    }
+
+    const fallback = tax;
+    const dayMs = 24 * 60 * 60 * 1000;
+    const stays = reservations.map((r) => {
+      const t = folioTotals(r.folio, fallback);
+      const stage = r.checkIn >= start && r.checkIn <= end ? "ARRIVING" : r.checkOut >= start && r.checkOut <= end ? "DEPARTING" : "IN_HOUSE";
+      return {
+        id: r.id, reservationNo: r.reservationNo, locationId: r.locationId, status: r.status, stage,
+        room: `${r.room.number} - ${r.room.roomType.name}`,
+        guest: `${r.customer.firstName} ${r.customer.lastName ?? ""}`.trim(), phone: r.customer.phone,
+        checkIn: r.checkIn.toISOString(), checkOut: r.checkOut.toISOString(),
+        nights: Math.max(1, Math.round((r.checkOut.getTime() - r.checkIn.getTime()) / dayMs)),
+        charges: round2(t.charges), paid: round2(t.paid), balance: round2(t.balance),
+        paymentStatus: t.charges <= 0.01 ? "NO_CHARGES" : t.balance <= 0.01 ? "PAID" : t.paid > 0.01 ? "PARTIAL" : "UNPAID",
+      };
+    });
+    // A stay with no location of its own goes under the first reception location.
+    const receptionId = locations.find((l) => l.type === "RECEPTION")?.id ?? locations.find((l) => l.canSellRooms)?.id ?? null;
+    const membershipRows = newMemberships.map((m) => ({
+      id: m.id, locationId: m.locationId, member: `${m.customer.firstName} ${m.customer.lastName ?? ""}`.trim(), phone: m.customer.phone,
+      plan: m.planName, price: round2(Number(m.planPrice)), startsAt: m.startsAt.toISOString(), endsAt: m.endsAt.toISOString(), status: m.status,
+      paid: round2(m.payments.filter((p) => p.status === "PAID").reduce((s, p) => s + Number(p.amount), 0)),
+    }));
+
+    const noLocation = buckets.has("none") ? [{ id: "none", name: "No location", type: "OTHER", canSellMenu: true, canSellServices: true, canSellProducts: true, canSellRooms: false }] : [];
+    const sections = [...locations, ...noLocation].map((loc) => {
+      const b = buckets.get(loc.id);
+      const locStays = stays.filter((s) => (s.locationId ?? receptionId) === loc.id);
+      const locMemberships = membershipRows.filter((m) => m.locationId === loc.id);
+      const membershipMoney = round2(membershipPayments.filter((p) => p.locationId === loc.id).reduce((s, p) => s + Number(p.amount), 0));
+      return {
+        locationId: loc.id, name: loc.name, type: String(loc.type),
+        sells: { menu: loc.canSellMenu, services: loc.canSellServices, products: loc.canSellProducts, rooms: loc.canSellRooms },
+        totals: {
+          orders: b?.orders ?? 0, sales: round2(b?.sales ?? 0), paid: round2(b?.paid ?? 0), credit: round2(b?.credit ?? 0),
+          roomBills: round2(b?.roomBills ?? 0), complimentary: round2(b?.complimentary ?? 0), membershipPayments: membershipMoney,
+          roomCharges: round2(locStays.reduce((s, x) => s + x.charges, 0)), roomPaid: round2(locStays.reduce((s, x) => s + x.paid, 0)), roomBalance: round2(locStays.reduce((s, x) => s + x.balance, 0)),
+        },
+        paymentMethods: [...(b?.methods ?? new Map<string, number>())].map(([name, amount]) => ({ name, amount: round2(amount) })).sort((x, y) => y.amount - x.amount),
+        items: [...(b?.items.values() ?? [])].map((i) => ({ ...i, value: round2(i.value) })).sort((x, y) => y.value - x.value || y.quantity - x.quantity),
+        stays: locStays,
+        memberships: locMemberships,
+      };
+    }).filter((s) => s.sells.menu || s.sells.services || s.sells.products || s.sells.rooms || s.totals.orders > 0 || s.stays.length > 0 || s.memberships.length > 0);
+
+    const debtorRows = debtors.map((c) => ({ id: c.id, name: c.businessName || `${c.firstName} ${c.lastName ?? ""}`.trim(), phone: c.phone, balance: round2(Number(c.balance)) }));
+    const livePurchases = purchases.filter((p) => p.status !== "CANCELLED");
+    res.json({
+      range: { start: start.toISOString(), end: end.toISOString() },
+      locations: sections,
+      credit: { count: debtorRows.length, total: round2(debtorRows.reduce((s, d) => s + d.balance, 0)), debtors: debtorRows.slice(0, 15) },
+      purchases: {
+        count: livePurchases.length,
+        total: round2(livePurchases.reduce((s, p) => s + Number(p.total), 0)),
+        rows: purchases.map((p) => ({ id: p.id, purchaseNo: p.purchaseNo, supplier: p.supplier?.name ?? "No supplier", location: p.location?.name ?? null, status: p.status, paymentStatus: p.paymentStatus, total: round2(Number(p.total)), reference: p.reference })),
+      },
     });
   } catch (error) {
     next(error);
